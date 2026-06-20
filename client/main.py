@@ -1390,6 +1390,9 @@ class Roblox2(ShowBase):
         # вспомогательный текст: LIT ENERGY / таймер / стаканы
         self.weapon_node = self._hud_text("weapon_extra", 1.28, -0.90, 0.038,
                                           TextNode.ARight, (1, 1, 1, 1))
+        # центральная подсказка: поставить стакан (появляется рядом с прицелом)
+        self.cup_hint_node = self._hud_text("cup_hint", 0, -0.18, 0.048,
+                                            TextNode.ACenter, (1.0, 0.9, 0.4, 1), card=0.38)
 
         self.chat_node = self._hud_text("chat", -1.3, -0.45, 0.042, TextNode.ALeft,
                                         (1, 1, 1, 1), card=0.30)
@@ -2978,16 +2981,18 @@ class Roblox2(ShowBase):
         elif gas:
             extra_parts.append(gas.strip())
         extra_parts.append(f"LIT: {self.lit_energy}")
-        cup_hint = ""
         if self.cups > 0:
-            near_free = any(
-                not taken and math.hypot(self.pos.x - cx, self.pos.y - cy) <= 4.5
-                for (cx, cy), taken in zip(CUP_SPOTS, self.cup_spots)
-            )
-            if near_free:
-                cup_hint = "  |  [R] — поставить стакан"
-            extra_parts.append(f"Стаканы: {self.cups}{cup_hint}")
+            extra_parts.append(f"Стаканы: {self.cups}")
         self.weapon_node.setText("  ".join(extra_parts))
+
+        # центральная подсказка про стакан (только когда рядом свободный пьедестал)
+        if self.cups > 0 and any(
+            not taken and math.hypot(self.pos.x - cx, self.pos.y - cy) <= 4.5
+            for (cx, cy), taken in zip(CUP_SPOTS, self.cup_spots)
+        ):
+            self.cup_hint_node.setText("[R]  поставить стакан")
+        else:
+            self.cup_hint_node.setText("")
 
         phase = f"ФАЗА 1: ТРАВЛЯ - Волна {self.wave} (тараканов: {self.alive_ants})"
         if getattr(self, "neon_alive", 0):

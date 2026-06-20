@@ -461,6 +461,7 @@ class Roblox2(ShowBase):
         self.ant_nodes = {}
         self._ant_prev = {}
         self.neon_ant_nodes = {}     # nid -> NodePath (синие стрелки)
+        self._neon_hp_bars = {}      # nid -> WorldBar
         self.ant_shot_nodes = {}     # asid -> NodePath (шкибиди-зелье)
         self.neon_alive = 0
         self.shot_nodes = {}
@@ -483,10 +484,15 @@ class Roblox2(ShowBase):
         self.bk_boss_info = None
         self._bk_hit_cd = 0.0
         self._prev_bk_hp = C.BLACK_KING_HP
-        # кат-сцена BLACK KING
+        # кат-сцена BLACK KING (появление)
         self._bk_cutscene = False
         self._bk_cutscene_t = 0.0
         self._bk_cup_nodes = []     # 4 вращающихся стакана (только в кат-сцене)
+        # кат-сцена смерти BLACK KING
+        self._bk_death_cs = False   # активна ли кат-сцена смерти
+        self._bk_death_t = 0.0      # таймер кат-сцены
+        self._bk_death_node = None  # узел модели для погружения в пол
+        self._bk_death_pos = (0.0, 0.0)  # позиция гибели
         # фаза 2 BLACK KING
         self.bk_shot_nodes = {}        # bksid -> NodePath (фиолетовые лазеры)
         self.bk_lc_nodes = {}          # cid -> NodePath (ожившие стаканы)
@@ -568,6 +574,9 @@ class Roblox2(ShowBase):
             for n in d.values():
                 n.removeNode()
             d.clear()
+        for bar in self._neon_hp_bars.values():
+            bar.destroy()
+        self._neon_hp_bars.clear()
         for bar in self.slit_bars.values():
             bar.destroy()
         self.slit_bars.clear()
@@ -640,8 +649,13 @@ class Roblox2(ShowBase):
         self._set_menu_blur(False)       # в бою — чёткая картинка
         self.hud_root.show()
         self._set_mouse_captured(True)
-        # музыка фазы (боссовая включится по событию)
-        self._play_music(AC.MUSIC_BOSS if self.boss_info else AC.MUSIC_PHASE1)
+        # музыка по текущей фазе мира (учитываем BLACK KING и босса)
+        if self.black_king:
+            self._play_music(AC.MUSIC_BLACK_KING)
+        elif self.boss_info:
+            self._play_music(AC.MUSIC_BOSS)
+        else:
+            self._play_music(AC.MUSIC_PHASE1)
 
     def resume(self):
         self.pause_menu.hide()
@@ -670,6 +684,23 @@ class Roblox2(ShowBase):
             self.firing = False
             self._stop_spray_sound()
             self._stop_step_loops()
+        # очистить туториал
+        for attr in ("_tut_overlay", "_tut_black"):
+            node = getattr(self, attr, None)
+            if node:
+                try: node.destroy()
+                except Exception: pass
+                setattr(self, attr, None)
+        if getattr(self, "_tut_scene_root", None):
+            try: self._tut_scene_root.removeNode()
+            except Exception: pass
+            self._tut_scene_root = None
+        if getattr(self, "_arena_root", None):
+            self._arena_root.show()
+        self._tut_world = None
+        self._tut_victory_t = 0.0
+        self.my_id = 0
+        self.setBackgroundColor(*SKY[:3])
         self._disconnect()               # выход в меню = отключение от сервера
         self.state = "HUB"
         self.phase = "-"
@@ -677,6 +708,287 @@ class Roblox2(ShowBase):
         self._set_menu_blur(True)        # вернуть размытый фон меню
         self._play_music(AC.MUSIC_HUB)   # вернуть музыку меню
         self.main_menu.show()
+
+    # tutorial methods
+
+    def start_tutorial(self):
+        self._hide_all_screens()
+        self._build_game()
+        if hasattr(self, "_arena_root"):
+            self._arena_root.hide()
+        self._build_tutorial_scene()
+        self.setBackgroundColor(0.02, 0.02, 0.04, 1)
+        self.state = "TUTORIAL"
+        self.phase = "ОБУЧЕНИЕ"
+        self._set_menu_blur(False)
+        self.hud_root.show()
+        self._set_mouse_captured(True)
+        self._play_music(AC.MUSIC_TUTORIAL)
+        self._tut_init()
+
+    def _build_tutorial_scene(self):
+        from panda3d.core import AmbientLight, DirectionalLight, Texture
+        W = 4.0; H = 4.5; L = 90.0
+        CY = L / 2
+        root = self.render.attachNewNode("tut_scene")
+        self._tut_scene_root = root
+        floor_tex = load_texture(self.loader, AC.BACKROOMS_FLOOR_TEXTURE)
+        wall_tex  = load_texture(self.loader, AC.BACKROOMS_WALL_TEXTURE)
+        for t in (floor_tex, wall_tex):
+            if t:
+                t.setWrapU(Texture.WMRepeat); t.setWrapV(Texture.WMRepeat)
+        def box(w_, d_, h_, x, y, z, col, tex=None, uv=0.25):
+            n = make_box(w_, d_, h_, col, uv_scale=uv)
+            n.reparentTo(root); n.setPos(x, y, z)
+            if tex: n.setTexture(tex)
+            return n
+        box(W*2, L, 0.15,  0, CY, -0.075, (0.80, 0.75, 0.50, 1), floor_tex, 0.25)
+        box(0.2,  L, H,   -W, CY,  H/2,   (0.85, 0.80, 0.57, 1), wall_tex,  0.25)
+        box(0.2,  L, H,    W, CY,  H/2,   (0.85, 0.80, 0.57, 1), wall_tex,  0.25)
+        box(W*2, L, 0.15,  0, CY,  H+0.075, (0.60, 0.57, 0.38, 1))
+        box(W*2, 0.2, H,   0, -0.1,    H/2, (0.70, 0.65, 0.44, 1))
+        box(W*2, 0.2, H,   0, L+0.1,   H/2, (0.50, 0.47, 0.30, 1))
+        for iy in range(5, int(L), 10):
+            p = box(W*1.1, 1.8, 0.08, 0, iy, H-0.04, (1.0, 0.97, 0.82, 1))
+            p.setLightOff(1)
+        for side in (-1, 1):
+            strip = box(0.08, L, 0.18, side*(W-0.08), CY, 0.09, (0.25, 0.55, 1.0, 1))
+            strip.setLightOff(1)
+        al = AmbientLight("tut_amb"); al.setColor((0.55, 0.52, 0.38, 1))
+        aln = root.attachNewNode(al); root.setLight(aln)
+        dl = DirectionalLight("tut_dir"); dl.setColor((0.7, 0.65, 0.48, 1))
+        dln = root.attachNewNode(dl); dln.setHpr(10, -55, 0)
+        root.setLight(dln)
+
+    def _tut_init(self):
+        import time as _time
+        from server.world import World
+        from direct.gui.DirectGui import DirectFrame, DirectLabel
+        self.pos = Vec3(0.0, 2.0, 0.0)
+        self.vz = 0.0; self.heading = 0.0; self.pitch = 0.0
+        self.on_ground = True; self.weapon = 'syrup'
+        self.hp = C.PLAYER_MAX_HP
+        self._tut_step = 0; self._tut_timer = 0.0
+        self._tut_particle_t = 0.0
+        self._tut_last_pos_x = self.pos.x
+        self._tut_last_pos_y = self.pos.y
+        self._tut_look_start_h = 0.0
+        self._tut_ant_was_alive = False
+        self._tut_neon_was_alive = False
+        self._tut_victory_t = 0.0
+        self._tut_kill_pos = [0.0, 28.0, 0.0]
+        self._tut_world = World()
+        self.my_id = 1
+        self._tut_world.add_player(1, 'Tutorial')
+        self._tut_world._wave_pending = False
+        self._tut_world.next_wave_at = 1e12
+        self._tut_world.next_slit_at = 1e12   # запрет авто-спавна щелей
+        p = self._tut_world.players[1]
+        p.touch_inv_until = _time.time() + 1e9
+        if hasattr(self, '_tut_overlay') and self._tut_overlay:
+            self._tut_overlay.destroy()
+        self._tut_overlay = DirectFrame(
+            frameColor=(0, 0, 0, 0.68), frameSize=(-1.0, 1.0, -0.14, 0.14),
+            pos=(0, 0, -0.80), parent=self.aspect2d,
+        )
+        f = self.fonts.get('ui')
+        kw = {'text_font': f} if f else {}
+        self._tut_text = DirectLabel(
+            parent=self._tut_overlay, text='',
+            scale=0.050, pos=(0, 0, 0.01),
+            frameColor=(0, 0, 0, 0), text_fg=(1, 1, 0.6, 1),
+            text_wordwrap=34, **kw,
+        )
+        self._tut_black = DirectFrame(
+            frameColor=(0, 0, 0, 0), frameSize=(-2, 2, -2, 2),
+            pos=(0, 0, 0), parent=self.aspect2d, sortOrder=100,
+        )
+        self._tut_black.hide()
+        self._tut_steps = [
+            ('walk',       'Иди вперёд по коридору! WASD — движение, мышь — обзор.'),
+            ('look',       'Теперь оглянись назад — осмотрись вокруг.'),
+            ('ant',        'ТАРАКАН! Зажми ЛКМ — стреляй сиропом [1]!'),
+            ('pickup_lit', 'Подбери LIT ENERGY — подойди к светящемуся предмету!'),
+            ('neon',       'СИНИЙ СТРЕЛОК! Нажми [3] — активируй пчёл, затем ЛКМ!'),
+            ('pickup_heal','Отлично! Подбери аптечку.'),
+            ('mayo',       'ЩЕЛЬ на стене! Нажми [2] — выбери МАЙОНЕЗ.'),
+            ('slit',       'Зажми ЛКМ рядом со ЩЕЛЬЮ — заливай её майонезом!'),
+        ]
+        self._tut_set_step(0)
+
+    def _tut_set_step(self, idx):
+        import time as _time
+        from server.world import Ant, NeonAnt, Slit
+        self._tut_step = idx
+        if idx >= len(self._tut_steps):
+            return
+        self._tut_text['text'] = self._tut_steps[idx][1]
+        w = self._tut_world; now = _time.time()
+        step_key = self._tut_steps[idx][0]
+        if step_key == 'look':
+            self._tut_look_start_h = self.heading
+        elif step_key == 'ant':
+            # один таракан прямо перед игроком в коридоре
+            spawn_y = max(self.pos.y + 12, 22.0)
+            aid = w._next_ant_id; w._next_ant_id += 1
+            a = Ant(aid, (0.0, spawn_y)); w.ants[aid] = a
+            self._tut_ant_was_alive = True
+            self._play_oneshot(AC.SFX_COCKROACH_STEP, volume=0.5)
+        elif step_key == 'neon':
+            # один синий стрелок чуть дальше по коридору
+            spawn_y = max(self.pos.y + 14, 36.0)
+            nid = w._next_neon_id; w._next_neon_id += 1
+            na = NeonAnt(nid, now); na.pos = [0.0, spawn_y, 0.0]; w.neon_ants[nid] = na
+            self._tut_neon_was_alive = True
+        elif step_key == 'slit':
+            sid = w._next_slit_id; w._next_slit_id += 1
+            sl = Slit(sid, [3.8, 52.0, C.PLAYER_HEIGHT * 0.5], [-1.0, 0.0])
+            w.slits[sid] = sl
+            w.slit_event_active = True
+            w.slit_deadline = now + 3600.0
+            w.events.append({'t': 'event', 'kind': 'slit_spawn', 'count': 1, 'time': 30.0})
+            self._play_oneshot(AC.SFX_SLIT_SPAWN, volume=1.0)
+
+    def _tut_build_snapshot(self):
+        import time as _time
+        w = self._tut_world; now = _time.time()
+        pl = w.players.get(1)
+        return {
+            'players':    {'1': pl.snapshot()} if pl else {},
+            'ants':       [a.snapshot() for a in w.ants.values()],
+            'neon_ants':  [na.snapshot() for na in w.neon_ants.values()],
+            'ant_shots':  [s.snapshot() for s in w.ant_shots.values()],
+            'shots':      [s.snapshot() for s in w.shots.values()],
+            'bees':       [b.snapshot() for b in w.bees.values()],
+            'drops':      [[did, d['pos'][0], d['pos'][1], d['kind']]
+                           for did, d in w.drops.items()],
+            'boss':       None,
+            'bshots':     [],
+            'slits':      [s.snapshot() for s in w.slits.values()],
+            'slit_time':  round(max(0, w.slit_deadline - now), 1)
+                          if w.slit_event_active else 0.0,
+            'wave': 0, 'alive': len(w.ants), 'neon': len(w.neon_ants),
+            'cup_spots': [False]*4, 'black_king': False,
+            'bk_boss': None, 'bk_minions': [], 'bk_shots': [],
+            'bk_living_cups': [], 'bk_cup_shots': [],
+        }
+
+    def _tut_update(self, dt):
+        if self.state != 'TUTORIAL' or not hasattr(self, '_tut_world'):
+            return
+        import time as _time
+        if self._tut_victory_t > 0:
+            self._tut_victory_t -= dt
+            alpha = min(1.0, 1.0 - self._tut_victory_t / 1.2)
+            self._tut_black['frameColor'] = (0, 0, 0, alpha)
+            if self._tut_victory_t <= 0:
+                self.goto_hub()
+            return
+        # коридор: клэмп позиции игрока внутри стен (W=4.0, L=90.0)
+        self.pos.x = max(-3.7, min(3.7, self.pos.x))
+        self.pos.y = max(0.1, min(89.5, self.pos.y))
+        w = self._tut_world
+        self._tut_particle_t += dt
+        if self._tut_particle_t > 0.10:
+            self._tut_particle_t = 0.0
+            import random as _r
+            for side in (-3.5, 3.5):
+                self.particles.burst(
+                    [side, self.pos.y + _r.uniform(-4, 22), _r.uniform(0.3, 4.0)],
+                    count=2, color=(0.22, 0.52, 1.0, 1), speed=0.35,
+                    size=0.10, life=2.8, grav=0.0, spread=0.18, up=0.0,
+                    vel_add=((-0.55 if side > 0 else 0.55), 0.0, 0.14),
+                )
+        w.set_state(1, [self.pos.x, self.pos.y, self.pos.z], self.heading, self.pitch)
+        self._tut_timer += dt
+        w.update(dt)
+        # восстановить инварианты — wipe/волны не должны появляться
+        w._wave_pending = False
+        w.next_wave_at = 1e12
+        w.next_slit_at = 1e12
+        pl = w.players.get(1)
+        if pl:
+            pl.dead = False
+            pl.hp = C.PLAYER_MAX_HP
+            pl.touch_inv_until = _time.time() + 1e9
+        # клэмп врагов внутри коридора
+        for a in w.ants.values():
+            a.pos[0] = max(-3.5, min(3.5, a.pos[0]))
+            a.pos[1] = max(0.5, min(89.0, a.pos[1]))
+        for na in w.neon_ants.values():
+            na.pos[0] = max(-3.5, min(3.5, na.pos[0]))
+            na.pos[1] = max(0.5, min(89.0, na.pos[1]))
+        for ev in w.events:
+            kind = ev.get('kind')
+            if kind == 'ant_killed':
+                self._play_oneshot(AC.SFX_COCKROACH_DEATH, volume=0.8)
+                p2 = ev.get('pos', [0, 28])
+                pos = [p2[0], p2[1], 0.5]
+                self._tut_kill_pos = pos[:]
+                self.particles.burst(pos, count=12, color=(0.9, 0.5, 0.0, 1),
+                    speed=4.0, size=0.25, life=0.7, grav=-5.0, spread=1.2, up=0.5)
+            elif kind == 'neon_ant_killed':
+                self._play_oneshot(AC.SFX_COCKROACH_DEATH, volume=0.9)
+                p2 = ev.get('pos', [0, 44])
+                pos = [p2[0], p2[1], 0.5]
+                self._tut_kill_pos = pos[:]
+                self.particles.burst(pos, count=14, color=(0.3, 0.7, 1.0, 1),
+                    speed=4.5, size=0.22, life=0.8, grav=-4.0, spread=1.1, up=0.6)
+            elif kind == 'slit_calmed':
+                self._play_oneshot(AC.SFX_SLIT_CALM, volume=1.0)
+            elif kind == 'slit_defeated':
+                self._play_oneshot(AC.SFX_SLIT_DEFEATED, volume=1.0)
+                self._flash_screen()
+                self._shake(0.18)
+                self._tut_overlay.hide()
+                self._tut_black.show()
+                self._tut_black['frameColor'] = (0, 0, 0, 0)
+                self._tut_victory_t = 1.6
+                w.events.clear()
+                return
+            elif kind == 'pickup':
+                self._play_oneshot(AC.SFX_PICKUP, volume=1.0)
+        w.events.clear()
+        step_key = (self._tut_steps[self._tut_step][0]
+                    if self._tut_step < len(self._tut_steps) else '_done')
+        if self._tut_ant_was_alive and not w.ants and not w.drops:
+            self._tut_ant_was_alive = False
+            did = w._next_drop_id; w._next_drop_id += 1
+            w.drops[did] = {'pos': list(self._tut_kill_pos), 'kind': 'lit_energy'}
+        if self._tut_neon_was_alive and not w.neon_ants and not w.drops:
+            self._tut_neon_was_alive = False
+            did = w._next_drop_id; w._next_drop_id += 1
+            w.drops[did] = {'pos': list(self._tut_kill_pos), 'kind': 'health'}
+        snap = self._tut_build_snapshot()
+        self._apply_snapshot(snap)
+        moved = math.hypot(self.pos.x - self._tut_last_pos_x,
+                           self.pos.y - self._tut_last_pos_y)
+        self._tut_last_pos_x = self.pos.x
+        self._tut_last_pos_y = self.pos.y
+        h_delta = abs(((self.heading - self._tut_look_start_h) + 180) % 360 - 180)
+        pl = w.players.get(1)
+        player_lit = (pl.lit_energy if pl else 0)
+        if step_key == 'walk' and self.pos.y > 14 and moved > 0.01:
+            self._tut_next()
+        elif step_key == 'look' and h_delta > 80:
+            self._tut_next()
+        elif step_key == 'ant' and not w.ants and not self._tut_ant_was_alive:
+            self._tut_next()
+        elif step_key == 'pickup_lit' and player_lit > 0:
+            self._play_oneshot(AC.SFX_JOIN_PHASE1, volume=0.7)
+            self._tut_next()
+        elif step_key == 'neon' and not w.neon_ants and not self._tut_neon_was_alive:
+            self._tut_next()
+        elif step_key == 'pickup_heal' and not w.drops and self._tut_timer > 0.5:
+            self._tut_next()
+        elif step_key == 'mayo' and self.weapon == 'mayo':
+            self._tut_next()
+
+    def _tut_next(self):
+        self._tut_timer = 0.0
+        next_idx = self._tut_step + 1
+        if next_idx < len(self._tut_steps):
+            self._tut_set_step(next_idx)
 
     def goto_farm(self):
         self._hide_all_screens()
@@ -893,9 +1205,9 @@ class Roblox2(ShowBase):
         self.render.setLight(cnp)
 
     def _build_world(self):
-        # спроектированная карта backrooms + витрина SWAGA на спавне
-        build_city(self.render, self.loader)
-        build_spawn_pillar(self.render, self.loader, self.font)
+        self._arena_root = self.render.attachNewNode("arena_root")
+        build_city(self._arena_root, self.loader)
+        build_spawn_pillar(self._arena_root, self.loader, self.font)
 
     def _build_world_scene(self):
         """Построить геометрию карты (свет + город). Без сети — годится и для фона меню."""
@@ -919,12 +1231,15 @@ class Roblox2(ShowBase):
     def _setup_game_input(self):
         """Регистрирует обработчики ввода по текущим key_bindings. Можно вызывать повторно."""
         kb = self.key_bindings
-        # сначала снимаем старые биндинги движения
-        for k in ("w","a","s","d","space","lshift","rshift","shift",
-                  "q","r","c","f","g","v","enter",
-                  "1","2","3","mouse1","mouse1-up"):
+        # снимаем ВСЕ ранее зарегистрированные клавиши:
+        # и дефолтные, и любые нестандартные из прошлых биндингов
+        _old = set(getattr(self, "_bound_keys", []))
+        _new = set(kb.values())
+        for k in _old | _new | {"w","a","s","d","space","lshift","rshift","shift",
+                                  "q","r","c","f","g","v","enter","1","2","3"}:
             self.ignore(k)
             self.ignore(f"{k}-up")
+        self._bound_keys = list(_new)
 
         def _bind_move(action):
             key = kb.get(action, "")
@@ -982,7 +1297,7 @@ class Roblox2(ShowBase):
                 self.pause()
         elif self.state == "SETTINGS":
             self.close_settings()
-        elif self.state in ("FARM", "SHOP"):
+        elif self.state in ("FARM", "SHOP", "TUTORIAL"):
             self.goto_hub()
         elif self.state == "PAUSE":
             self.resume()
@@ -1051,10 +1366,27 @@ class Roblox2(ShowBase):
         self.online_node = self._hud_text("online", 1.28, 0.885, 0.045, TextNode.ARight,
                                           (0.7, 0.9, 1.0, 1))
 
-        # Оружие/боезапас — низ-справа, с иконкой цвета оружия
-        self.weapon_icon = self._hud_icon(1.28, -0.78, (0.45, 1.0, 0.55, 1), 0.045)
-        self.weapon_node = self._hud_text("weapon", 1.21, -0.80, 0.05, TextNode.ARight,
-                                          (1, 1, 1, 1))
+        # Иконки оружий — три карточки низ-справа, активная выделяется
+        self._weapon_slots = {}  # weapon_key -> (bg_card, label_tn)
+        wdefs = [
+            ("syrup", "1", (0.35, 1.0, 0.45, 1)),
+            ("mayo",  "2", (0.97, 0.97, 0.78, 1)),
+            ("hive",  "3", (1.0,  0.75, 0.1, 1)),
+        ]
+        for i, (wkey, hotkey, col) in enumerate(wdefs):
+            cx = 1.28 - i * 0.14
+            bg = self._hud_icon(cx, -0.78, (0.1, 0.1, 0.1, 0.55), size=0.058)
+            tn_key = self._hud_text(f"wi_{wkey}_k", cx, -0.77, 0.028, TextNode.ACenter,
+                                    (0.6, 0.6, 0.6, 1))
+            tn_key.setText(hotkey)
+            tn_name = self._hud_text(f"wi_{wkey}_n", cx, -0.82, 0.024, TextNode.ACenter,
+                                     col)
+            short = {"syrup": "СИРОП", "mayo": "МАЙО", "hive": "ПЧЁЛЫ"}
+            tn_name.setText(short[wkey])
+            self._weapon_slots[wkey] = (bg, col)
+        # вспомогательный текст: LIT ENERGY / таймер / стаканы
+        self.weapon_node = self._hud_text("weapon_extra", 1.28, -0.90, 0.038,
+                                          TextNode.ARight, (1, 1, 1, 1))
 
         self.chat_node = self._hud_text("chat", -1.3, -0.45, 0.042, TextNode.ALeft,
                                         (1, 1, 1, 1), card=0.30)
@@ -1145,7 +1477,7 @@ class Roblox2(ShowBase):
 
     # ---------- действия ----------
     def _can_fire(self):
-        return self.state == "COMBAT" and not self.chat_active and not self.is_dead and self.net
+        return self.state in ("COMBAT", "TUTORIAL") and not self.chat_active and not self.is_dead
 
     def _on_fire_down(self):
         if not self._can_fire():
@@ -1176,8 +1508,11 @@ class Roblox2(ShowBase):
             fy += random.uniform(-s, s)
             fz += random.uniform(-s, s)
         origin = [self.pos.x, self.pos.y, self.pos.z + 1.8]
-        self.net.send({"t": "shoot", "pos": origin, "dir": [fx, fy, fz],
-                       "weapon": self.weapon})
+        if self.state == "TUTORIAL" and hasattr(self, "_tut_world"):
+            self._tut_world.shoot(1, origin, [fx, fy, fz], self.weapon)
+        elif self.net:
+            self.net.send({"t": "shoot", "pos": origin, "dir": [fx, fy, fz],
+                           "weapon": self.weapon})
         # всплеск жидкости у «дула» (только струи)
         if self.weapon in ("syrup", "mayo"):
             muzzle = [self.pos.x + fx * 1.2, self.pos.y + fy * 1.2, self.pos.z + 1.8 + fz]
@@ -1297,17 +1632,23 @@ class Roblox2(ShowBase):
             self._spray_loop_snd = None
 
     def _set_weapon(self, weapon):
-        if self.state != "COMBAT":
+        if self.state not in ("COMBAT", "TUTORIAL"):
             return
         # пчёлы (улей) — не постоянное оружие: нужен активный запас LIT ENERGY
         if weapon == "hive" and self.bee_time <= 0:
-            if self.lit_energy > 0 and self.net:
-                self.net.send({"t": "use_lit"})   # потратить LIT ENERGY -> открыть пчёл
-                self.bee_time = C.BEE_WINDOW       # оптимистично (снапшот уточнит), чтоб не сбросило
+            if self.lit_energy > 0:
+                if self.state == "TUTORIAL" and hasattr(self, "_tut_world") and self._tut_world:
+                    self._tut_world.use_lit_energy(1)
+                elif self.net:
+                    self.net.send({"t": "use_lit"})
+                self.bee_time = C.BEE_WINDOW
                 self._add_chat_line("[LIT ENERGY] потрачено - пчёлы активны!")
+                self._play_oneshot(AC.SFX_LIT_ENERGY, volume=0.9)
             else:
                 self._add_chat_line("[ПЧЁЛЫ] нужна LIT ENERGY (выбей её с тараканов)")
                 return
+        if weapon != self.weapon:
+            self._play_oneshot(AC.SFX_WEAPON_SELECT, volume=0.7)
         self.weapon = weapon
         names = {"syrup": "Распылитель сиропа", "mayo": "Майонезная пушка",
                  "hive": "Улей-пчёлы (LIT ENERGY)"}
@@ -1321,7 +1662,7 @@ class Roblox2(ShowBase):
                 self._start_spray_sound()   # сменить луп на нужную жидкость
 
     def _gas(self):
-        if self.state != "COMBAT" or self.chat_active:
+        if self.state not in ("COMBAT", "TUTORIAL") or self.chat_active:
             return
         import time as _t
         self.gas_until = _t.time() + C.GAS_DURATION
@@ -1340,7 +1681,7 @@ class Roblox2(ShowBase):
         self.net.send({"t": "place_cup"})
 
     def _toggle_camera(self):
-        if self.state != "COMBAT":
+        if self.state not in ("COMBAT", "TUTORIAL"):
             return
         self.camera_mode = "first" if self.camera_mode == "third" else "third"
         label = "от первого лица" if self.camera_mode == "first" else "от третьего лица"
@@ -1378,6 +1719,20 @@ class Roblox2(ShowBase):
         # (мультиплеер не замораживается; пауза лишь размывает фон и снимает управление)
         live = self.world_built and self.net is not None
         if not live:
+            if self.state == "TUTORIAL" and self.world_built:
+                # туториал — без сети, свой цикл
+                controllable_tut = not self._bk_cutscene and not self._bk_death_cs
+                if controllable_tut:
+                    self._mouse_look()
+                    self._update_firing(dt)
+                self.particles.update(dt)
+                if controllable_tut:
+                    self._move(dt)
+                self._apply_camera(dt)
+                self._update_overlays(dt)
+                self._update_hud()
+                self._tut_update(dt)
+                return Task.cont
             self._update_menu_background(dt)   # живой фон меню (без подключения)
             return Task.cont
 
@@ -1393,8 +1748,9 @@ class Roblox2(ShowBase):
         self.particles.update(dt)
         if controllable:
             self._move(dt)
-        self._update_bk_cutscene(dt)   # кат-сцена управляет камерой сама
-        if not self._bk_cutscene:
+        self._update_bk_cutscene(dt)   # кат-сцена появления управляет камерой
+        self._update_bk_death_cutscene(dt)  # кат-сцена смерти
+        if not self._bk_cutscene and not self._bk_death_cs:
             self._apply_camera(dt)
         # сироп льётся из угловых стаканов во время фазы BLACK KING
         if self.black_king and not self._bk_cutscene:
@@ -1522,10 +1878,15 @@ class Roblox2(ShowBase):
             self.knockback.set(0, 0, 0)
 
         # опора под ногами: пол (0) либо верх платформы 2-го уровня
-        ground_z = support_z(self.pos.x, self.pos.y, self.pos.z)
+        # в туториале всегда ровный пол на Z=0, арена-функции не применяются
+        if self.state == "TUTORIAL":
+            ground_z = 0.0
+        else:
+            ground_z = support_z(self.pos.x, self.pos.y, self.pos.z)
 
         # прыжок и гравитация (джамп-пад имеет приоритет над обычным прыжком)
-        if (self.on_ground and ground_z <= 0.01 and not self.chat_active
+        if (self.state != "TUTORIAL" and self.on_ground and ground_z <= 0.01
+                and not self.chat_active
                 and on_jump_pad(self.pos.x, self.pos.y)):
             self.vz = C.JUMP_PAD_BOOST          # подбрасывает на верхний уровень
             self.on_ground = False
@@ -1541,13 +1902,16 @@ class Roblox2(ShowBase):
         else:
             self.on_ground = False
 
-        lim = C.WORLD_SIZE - 1
-        self.pos.x = max(-lim, min(lim, self.pos.x))
-        self.pos.y = max(-lim, min(lim, self.pos.y))
-
-        # коллизии со стенами (выталкивание наружу); на верхнем кольце (z>стен) не толкает
-        self.pos.x, self.pos.y = resolve_collision(
-            self.pos.x, self.pos.y, self._building_rects, radius=0.6, z=self.pos.z)
+        if self.state == "TUTORIAL":
+            # коридор: клэмп делается в _tut_update; арена-стены не применяются
+            pass
+        else:
+            lim = C.WORLD_SIZE - 1
+            self.pos.x = max(-lim, min(lim, self.pos.x))
+            self.pos.y = max(-lim, min(lim, self.pos.y))
+            # коллизии со стенами (выталкивание наружу); на верхнем кольце (z>стен) не толкает
+            self.pos.x, self.pos.y = resolve_collision(
+                self.pos.x, self.pos.y, self._building_rects, radius=0.6, z=self.pos.z)
 
     def _apply_camera(self, dt):
         rad_h = math.radians(self.heading)
@@ -1680,9 +2044,8 @@ class Roblox2(ShowBase):
         elif kind == "bk_defeated":
             self._add_chat_line(f"=== BLACK KING ПОВЕРЖЕН! {msg.get('by')} стал легендой! +50 всем! ===")
             self._play_oneshot(AC.SFX_BLACK_KING_DEATH)
-            self._flash_screen((1.0, 0.9, 0.0, 1), duration=2.0, hold=0.5)
-            self._shake(1.2)
-            self._play_music(AC.MUSIC_PHASE1)
+            pos = msg.get("pos", [0.0, 0.0])
+            self._start_bk_death_cutscene(pos[0], pos[1])
         elif kind == "bk_voice":
             import random as _r
             voices = [v for v in AC.SFX_BLACK_KING_VOICES]
@@ -1724,6 +2087,9 @@ class Roblox2(ShowBase):
                                rate=1.5)
         elif kind == "wipe":
             self._add_chat_line("[ВАЙП] все погибли - фаза сброшена, начинаем заново!")
+            # после вайпа возвращаем основную тему (могла остаться боссовая)
+            if not self.black_king:
+                self._play_music(AC.MUSIC_PHASE1)
         elif kind == "boss_gas":
             pos = msg.get("pos", [0, 0])
             # облако едкого зелёного дыма ГАЗЗЗ
@@ -1969,19 +2335,31 @@ class Roblox2(ShowBase):
         # синие неоновые муравьи-стрелки (светятся, появляются после 3-й волны)
         seen_neon = set()
         for na in msg.get("neon_ants", []):
-            nid, nx, ny, nh = na
+            nid, nx, ny, nh = na[:4]
+            hp = na[4] if len(na) > 4 else C.NEON_ANT_HP
             seen_neon.add(nid)
             node = self.neon_ant_nodes.get(nid)
             if node is None:
                 node = make_neon_ant(scale=1.15)
                 node.reparentTo(self.render)
                 self.neon_ant_nodes[nid] = node
+                bar = WorldBar(self.render, label="", width=0.8, height=0.14,
+                               fill_color=(0.2, 0.6, 1.0, 1),
+                               font=self.fonts.get("world"))
+                self._neon_hp_bars[nid] = bar
             node.setPos(nx, ny, 0.0)
             node.setH(nh)
+            if nid in self._neon_hp_bars:
+                bar = self._neon_hp_bars[nid]
+                bar.set_pos(nx, ny, 2.4)
+                bar.set_fraction(hp / C.NEON_ANT_HP)
         for nid in list(self.neon_ant_nodes):
             if nid not in seen_neon:
                 self.neon_ant_nodes[nid].removeNode()
                 del self.neon_ant_nodes[nid]
+                if nid in self._neon_hp_bars:
+                    self._neon_hp_bars[nid].destroy()
+                    del self._neon_hp_bars[nid]
 
         # «шкибиди-зелье» - синие неоновые снаряды муравьёв (+ светящийся трейл)
         seen_ashots = set()
@@ -2307,6 +2685,63 @@ class Roblox2(ShowBase):
             return holder
         return make_bk_minion()
 
+    def _start_bk_death_cutscene(self, x, y):
+        """Запустить кат-сцену гибели BLACK KING: уходит под землю."""
+        self._bk_death_cs = True
+        self._bk_death_t = 0.0
+        self._bk_death_pos = (x, y)
+        self.hud_root.hide()
+        # создаём копию модели специально для кат-сцены
+        self._bk_death_node = self._make_bk_boss_node()
+        self._bk_death_node.reparentTo(self.render)
+        self._bk_death_node.setPos(x, y, 0.0)
+        # сбрасываем живой узел — чтобы не мешал
+        if self.bk_boss_node:
+            self.bk_boss_node.hide()
+
+    def _update_bk_death_cutscene(self, dt):
+        if not self._bk_death_cs:
+            return
+        import random as _r
+        DURATION = 5.0
+        self._bk_death_t += dt
+        t = self._bk_death_t
+        x, y = self._bk_death_pos
+
+        # камера — смотрит на позицию гибели с той же стороны, что и сам BK
+        # направление «от центра» чтобы не закрывала центральная башня
+        frac = min(1.0, t / DURATION)
+        cam_z = 10.0 + 4.0 * (1.0 - frac)
+        cam_d = 18.0 - 10.0 * frac
+        dist_from_center = math.hypot(x, y) or 1.0
+        nx, ny = x / dist_from_center, y / dist_from_center  # от центра к боссу
+        self.camera.setPos(x + nx * cam_d, y + ny * cam_d, cam_z)
+        self.camera.lookAt(x, y, 2.0)
+
+        # модель тонет под землю
+        sink = max(-7.0, -frac * 7.0)
+        if self._bk_death_node and not self._bk_death_node.isEmpty():
+            self._bk_death_node.setPos(x, y, sink)
+            self._bk_death_node.setH(self._bk_death_node.getH() + 60.0 * dt)
+            # фиолетово-чёрные частицы разлетаются
+            if int(t * 8) % 2 == 0:
+                self.particles.burst([x + _r.uniform(-1, 1), y + _r.uniform(-1, 1), max(0.1, sink + 1)],
+                                     count=6, color=(0.4, 0.0, 0.8, 1), speed=4.0,
+                                     size=0.5, life=1.2, grav=-2.0, spread=1.5, up=0.6)
+
+        if t >= DURATION:
+            # кат-сцена завершена
+            self._bk_death_cs = False
+            if self._bk_death_node and not self._bk_death_node.isEmpty():
+                self._bk_death_node.removeNode()
+            self._bk_death_node = None
+            self._flash_screen((1.0, 0.9, 0.0, 1), duration=2.0, hold=0.5)
+            self._shake(1.2)
+            self._play_music(AC.MUSIC_PHASE1)
+            self.hud_root.show()
+            # сбросить ночной фильтр
+            self._bk_night_alpha = 0.0
+
     def _update_remotes(self, dt):
         pass  # обновляются в _apply_snapshot
 
@@ -2449,16 +2884,30 @@ class Roblox2(ShowBase):
         # Онлайн (верх-справа)
         self.online_node.setText(f"Онлайн: {online}")
 
-        # Оружие/боезапас (низ-справа) + иконка цвета оружия
+        # Иконки оружий — подсветить активный слот
+        for wkey, (bg_card, col) in self._weapon_slots.items():
+            active = (wkey == self.weapon)
+            bg_card.setColor(*(0.55, 0.95, 0.35, 0.85) if active else (0.1, 0.1, 0.1, 0.55))
+            bg_card.setScale(0.070 if active else 0.058)
+
+        # доп. строка: LIT ENERGY / таймер пчёл / стаканы / ГАЗ
         gas = " +ГАЗ" if _t.time() < self.gas_until else ""
-        wline = f"{wnames.get(self.weapon, self.weapon)}{gas}"
+        extra_parts = []
         if self.bee_time > 0:
-            wline += f"  ({self.bee_time:.0f}с)"
-        extra = f"\nLIT ENERGY [3]: {self.lit_energy}"
+            extra_parts.append(f"ПЧЁЛЫ: {self.bee_time:.0f}с{gas}")
+        elif gas:
+            extra_parts.append(gas.strip())
+        extra_parts.append(f"LIT: {self.lit_energy}")
+        cup_hint = ""
         if self.cups > 0:
-            extra += f"   Стаканы [R]: {self.cups}"
-        self.weapon_node.setText(wline + extra)
-        self.weapon_icon.setColor(*wcolors.get(self.weapon, (1, 1, 1, 1)))
+            near_free = any(
+                not taken and math.hypot(self.pos.x - cx, self.pos.y - cy) <= C.CUP_SPOT_RADIUS + 1.5
+                for (cx, cy), taken in zip(CUP_SPOTS, self.cup_spots)
+            )
+            if near_free:
+                cup_hint = "  |  [R] — поставить стакан"
+            extra_parts.append(f"Стаканы: {self.cups}{cup_hint}")
+        self.weapon_node.setText("  ".join(extra_parts))
 
         phase = f"ФАЗА 1: ТРАВЛЯ - Волна {self.wave} (тараканов: {self.alive_ants})"
         if getattr(self, "neon_alive", 0):

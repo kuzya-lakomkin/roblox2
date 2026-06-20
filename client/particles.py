@@ -31,8 +31,9 @@ class ParticleSystem:
         self.parts = []
 
     def burst(self, pos, count=8, color=(1, 1, 1, 1), speed=4.0,
-              size=0.22, life=0.6, grav=-9.0, spread=1.0, up=1.0):
-        """Разлёт частиц из точки pos."""
+              size=0.22, life=0.6, grav=-9.0, spread=1.0, up=1.0,
+              vel_add=None):
+        """Разлёт частиц из точки pos. vel_add=(dx,dy,dz) добавляет постоянную скорость."""
         if len(self.parts) > _MAX:
             return
         for _ in range(count):
@@ -45,6 +46,8 @@ class ParticleSystem:
             vel = Vec3(random.uniform(-1, 1) * speed * spread,
                        random.uniform(-1, 1) * speed * spread,
                        random.uniform(0.2, 1.0) * speed * up)
+            if vel_add:
+                vel.x += vel_add[0]; vel.y += vel_add[1]; vel.z += vel_add[2]
             self.parts.append(_P(node, vel, life * random.uniform(0.7, 1.2),
                                  size, color, grav))
 

@@ -46,11 +46,33 @@ cache/
 .idea/
 *.sublime-project
 *.sublime-workspace
+*.code-workspace
 
 # Windows
 Thumbs.db
 Desktop.ini
 $RECYCLE.BIN/
+ehthumbs.db
 
 # Установочные артефакты
 *.lnk
+*.zip
+
+# Временные и служебные файлы проекта
+_patch_tut.py
+_tut_patch.py
+*.tmp
+*.bak
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Покрытие тестов
+.coverage
+htmlcov/
+.pytest_cache/

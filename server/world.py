@@ -445,7 +445,7 @@ class NeonAnt:
         self.pos[0], self.pos[1] = _clamp_to_arena(self.pos[0], self.pos[1])
 
     def snapshot(self):
-        return [self.nid, round(self.pos[0], 2), round(self.pos[1], 2), round(self.h, 1)]
+        return [self.nid, round(self.pos[0], 2), round(self.pos[1], 2), round(self.h, 1), self.hp]
 
 
 class AntShot:
@@ -781,7 +781,32 @@ class World:
         return p
 
     def remove_player(self, pid):
-        return self.players.pop(pid, None)
+        pl = self.players.pop(pid, None)
+        if not self.players:
+            # все вышли — сброс до начального состояния
+            self.ants.clear()
+            self.neon_ants.clear()
+            self.ant_shots.clear()
+            self.shots.clear()
+            self.bees.clear()
+            self.boss_shots.clear()
+            self.boss = None
+            self.slits = {}
+            self.slit_event_active = False
+            self.drops.clear()
+            self.wave = 0
+            self._wave_pending = False
+            self.next_wave_at = 0.0
+            self.next_slit_at = 0.0
+            # сброс фазы BLACK KING
+            self.bk_boss = None
+            self.bk_minions.clear()
+            self.bk_shots.clear()
+            self.bk_living_cups.clear()
+            self.bk_cup_shots.clear()
+            self.black_king = False
+            self.cup_spots = [False] * len(CUP_SPOTS)
+        return pl
 
     def set_state(self, pid, pos, h, p):
         pl = self.players.get(pid)
@@ -1398,7 +1423,8 @@ class World:
             if pl.dead and now >= pl.respawn_at:
                 pl.dead = False
                 pl.hp = C.PLAYER_MAX_HP
-                pl.pos = [random.uniform(-12, 12), random.uniform(-20, -10), 0.0]  # на спавне
+                # всегда на изначальной точке спавна (южная яма)
+                pl.pos = [random.uniform(-8, 8), random.uniform(-20, -12), 0.0]
 
     def _check_wipe(self, now):
         """Если ВСЕ игроки мертвы — сброс фазы до нулевой (заново с 1-й волны),
@@ -1605,8 +1631,10 @@ class World:
             owner = self.players.get(owner_id)
             for pl in self.players.values():
                 pl.score += 50
+            death_pos = [round(self.bk_boss.pos[0], 2), round(self.bk_boss.pos[1], 2)]
             self.events.append({"t": "event", "kind": "bk_defeated",
-                                "by": owner.name if owner else "?"})
+                                "by": owner.name if owner else "?",
+                                "pos": death_pos})
             self.bk_boss = None
             self.bk_minions.clear()
             self.bk_shots.clear()

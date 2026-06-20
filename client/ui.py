@@ -250,7 +250,8 @@ ALL_BINDABLE_KEYS = [
     "a","b","c","d","e","f","g","h","i","j","k","l","m",
     "n","o","p","q","r","s","t","u","v","w","x","y","z",
     "0","1","2","3","4","5","6","7","8","9",
-    "space","tab","lshift","rshift","lcontrol","rcontrol","lalt","ralt",
+    "space","tab","lshift","rshift","lcontrol","rcontrol",
+    # lalt/ralt намеренно исключены: Alt+F4 закрывает окно на уровне ОС
     "f1","f2","f3","f4","f5","f6","f7","f8","f9","f10","f11","f12",
     "arrow_up","arrow_down","arrow_left","arrow_right",
     "insert","delete","home","end","page_up","page_down",
@@ -349,6 +350,15 @@ class KeyBindingsScreen(Screen):
         btn.bind(DGG.B1RELEASE,self._on_enter, [btn])
         return btn
 
+    def _stop_capture(self):
+        """Снять все временные слушатели режима ожидания клавиши."""
+        for k in ALL_BINDABLE_KEYS:
+            self.app.ignore(k)
+        # восстанавливаем глобальный Escape (не просто ignore — иначе пауза перестаёт работать)
+        self.app.accept("escape", self.app._on_escape)
+        self._rebind_label.hide()
+        self._rebinding = None
+
     def _start_rebind(self, action):
         if self._rebinding:
             return
@@ -356,16 +366,28 @@ class KeyBindingsScreen(Screen):
         self._rebind_label.show()
         for key in ALL_BINDABLE_KEYS:
             self.app.accept(key, self._key_captured, [key])
+        # escape отменяет без сохранения
+        self.app.accept("escape", self._cancel_rebind)
+
+    def _cancel_rebind(self):
+        self._stop_capture()
+        self._build_rows()
 
     def _key_captured(self, key):
-        for k in ALL_BINDABLE_KEYS:
-            self.app.ignore(k)
-        self._rebind_label.hide()
-        if self._rebinding:
-            self.app.key_bindings[self._rebinding] = key
+        action = self._rebinding
+        self._stop_capture()
+        if action:
+            # проверить не занята ли клавиша другим действием
+            conflict = next(
+                (a for a, k in self.app.key_bindings.items() if k == key and a != action),
+                None
+            )
+            if conflict:
+                # снять у конфликтующего действия
+                self.app.key_bindings[conflict] = ""
+            self.app.key_bindings[action] = key
             self.app._save_settings()
             self.app._setup_game_input()
-        self._rebinding = None
         self._build_rows()
 
     def _reset_defaults(self):
@@ -378,10 +400,7 @@ class KeyBindingsScreen(Screen):
 
     def _back(self):
         if self._rebinding:
-            for k in ALL_BINDABLE_KEYS:
-                self.app.ignore(k)
-            self._rebind_label.hide()
-            self._rebinding = None
+            self._stop_capture()
         self.hide()
         self.app.settings_menu.show()
 
@@ -410,11 +429,12 @@ class MainMenu(Screen):
 
         self._button_stack([
             ("Тараканья нора (бой)", app.start_combat),
+            ("Обучение", app.start_tutorial),
             ("Улей (ферма)", app.goto_farm),
             ("Магазин", app.goto_shop),
             ("Настройки", app.open_settings),
             ("Выход", app.quit_game),
-        ], top_y=0.12)
+        ], top_y=0.14)
 
     def get_name(self):
         txt = (self.name_entry.get() or "").strip()
@@ -490,30 +510,42 @@ class SettingsMenu(Screen):
 class LoginScreen(Screen):
     """Экран авторизации: логин + пароль + адрес auth-сервера."""
 
+    # поле с меткой над ним (по центру)
+    def _field(self, label, y_label, y_entry, width=18, obscured=False, hint=""):
+        from panda3d.core import TextNode
+        self._label(label, (0, 0, y_label), scale=0.040, color=ACCENT,
+                    align=TextNode.ACenter)
+        if hint:
+            self._label(hint, (0, 0, y_label - 0.065), scale=0.028,
+                        color=(0.65, 0.65, 0.55, 1), align=TextNode.ACenter)
+        entry_x = -(width * 0.050 * 0.48)
+        return self._entry((entry_x, 0, y_entry), width=width, obscured=obscured)
+
     def __init__(self, app):
-        super().__init__(app, panel=(-0.52, 0.52, -0.78, 0.82))
-        self._title("SWAGA", y=0.70, scale=0.18)
-        self._label("Войдите, чтобы играть", (0, 0, 0.54), scale=0.048, color=ACCENT2)
+        super().__init__(app, panel=(-0.54, 0.54, -0.76, 0.82))
+        self._title("SWAGA", y=0.68, scale=0.18)
+        self._label("Войдите, чтобы играть", (0, 0, 0.50),
+                    scale=0.044, color=ACCENT2)
 
-        self._label("Логин:",   (-0.46, 0, 0.38), scale=0.045, color=ACCENT)
-        self.e_login = self._entry((-0.46, 0, 0.30), width=16)
+        self.e_login = self._field("Логин",  0.33, 0.22, width=18)
+        self.e_pass  = self._field("Пароль", 0.08, -0.03, width=18, obscured=True)
 
-        self._label("Пароль:", (-0.46, 0, 0.16), scale=0.045, color=ACCENT)
-        self.e_pass = self._entry((-0.46, 0, 0.08), width=16, obscured=True)
-
-        # поле адреса auth-сервера (мелкое, внизу)
-        self._label("Auth-сервер:", (-0.46, 0, -0.22), scale=0.036, color=(0.7, 0.7, 0.6, 1))
-        self.e_auth = self._entry((-0.46, 0, -0.30), width=22, initial=app._auth_server)
-        self.e_auth["scale"] = 0.040
+        # auth-сервер — мелко, отдельно
+        self._label("Auth-сервер", (0, 0, -0.24), scale=0.032,
+                    color=(0.65, 0.65, 0.55, 1))
+        entry_x = -(22 * 0.042 * 0.48)
+        self.e_auth = self._entry((entry_x, 0, -0.33), width=22,
+                                  initial=app._auth_server)
+        self.e_auth["scale"] = 0.042
 
         self._button_stack([
             ("Войти",       self._do_login),
             ("Регистрация", self._goto_register),
-        ], top_y=-0.44, hw=0.34, hh=0.052)
+        ], top_y=-0.47, hw=0.36, hh=0.055)
 
         self._error_label = DirectLabel(
-            parent=self.root, text="", scale=0.040, pos=(0, 0, -0.64),
-            frameColor=(0, 0, 0, 0), text_fg=(1, 0.4, 0.4, 1),
+            parent=self.root, text="", scale=0.038, pos=(0, 0, -0.66),
+            frameColor=(0, 0, 0, 0), text_fg=(1, 0.35, 0.35, 1),
             **_kw(self.font_ui),
         )
 
@@ -538,36 +570,42 @@ class LoginScreen(Screen):
 class RegisterScreen(Screen):
     """Экран регистрации нового аккаунта."""
 
+    def _field(self, label, y_label, y_entry, width=18, obscured=False, hint=""):
+        from panda3d.core import TextNode
+        self._label(label, (0, 0, y_label), scale=0.040, color=ACCENT,
+                    align=TextNode.ACenter)
+        if hint:
+            self._label(hint, (0, 0, y_label - 0.058), scale=0.026,
+                        color=(0.60, 0.60, 0.50, 1), align=TextNode.ACenter)
+        entry_x = -(width * 0.050 * 0.48)
+        return self._entry((entry_x, 0, y_entry), width=width, obscured=obscured)
+
     def __init__(self, app):
-        super().__init__(app, panel=(-0.52, 0.52, -0.88, 0.82))
-        self._title("РЕГИСТРАЦИЯ", y=0.70, scale=0.12)
+        super().__init__(app, panel=(-0.54, 0.54, -0.90, 0.82))
+        self._title("РЕГИСТРАЦИЯ", y=0.68, scale=0.11)
 
-        self._label("Логин:",           (-0.46, 0, 0.50), scale=0.042, color=ACCENT)
-        self.e_login = self._entry((-0.46, 0, 0.42), width=16)
-        self._label("(A-Z a-z 0-9 _ , 3-20 симв.)", (-0.46, 0, 0.34), scale=0.030,
-                    color=(0.6, 0.6, 0.5, 1))
+        self.e_login = self._field(
+            "Логин", 0.52, 0.40, width=18,
+            hint="3-20 символов: A-Z a-z 0-9 _")
+        self.e_nick  = self._field("Ник в игре", 0.22, 0.11, width=18)
+        self.e_pass  = self._field("Пароль",     -0.04, -0.15, width=18, obscured=True)
+        self.e_pass2 = self._field("Повторить пароль", -0.29, -0.40, width=18, obscured=True)
 
-        self._label("Ник в игре:",      (-0.46, 0, 0.22), scale=0.042, color=ACCENT)
-        self.e_nick = self._entry((-0.46, 0, 0.14), width=16)
-
-        self._label("Пароль:",          (-0.46, 0, 0.02), scale=0.042, color=ACCENT)
-        self.e_pass = self._entry((-0.46, 0, -0.06), width=16, obscured=True)
-
-        self._label("Повторить пароль:",(-0.46, 0, -0.18), scale=0.042, color=ACCENT)
-        self.e_pass2 = self._entry((-0.46, 0, -0.26), width=16, obscured=True)
-
-        self._label("Auth-сервер:",     (-0.46, 0, -0.38), scale=0.034, color=(0.7,0.7,0.6,1))
-        self.e_auth = self._entry((-0.46, 0, -0.46), width=22, initial=app._auth_server)
-        self.e_auth["scale"] = 0.038
+        self._label("Auth-сервер", (0, 0, -0.56), scale=0.030,
+                    color=(0.65, 0.65, 0.55, 1))
+        entry_x = -(22 * 0.040 * 0.48)
+        self.e_auth = self._entry((entry_x, 0, -0.64), width=22,
+                                  initial=app._auth_server)
+        self.e_auth["scale"] = 0.040
 
         self._button_stack([
             ("Создать аккаунт", self._do_register),
             ("Назад",           self._goto_login),
-        ], top_y=-0.60, hw=0.34, hh=0.052)
+        ], top_y=-0.73, hw=0.38, hh=0.055)
 
         self._error_label = DirectLabel(
-            parent=self.root, text="", scale=0.038, pos=(0, 0, -0.76),
-            frameColor=(0, 0, 0, 0), text_fg=(1, 0.4, 0.4, 1),
+            parent=self.root, text="", scale=0.036, pos=(0, 0, -0.83),
+            frameColor=(0, 0, 0, 0), text_fg=(1, 0.35, 0.35, 1),
             **_kw(self.font_ui),
         )
 

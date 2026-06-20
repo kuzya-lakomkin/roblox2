@@ -1177,7 +1177,8 @@ class World:
             for pl in self.players.values():
                 if pl.dead:
                     continue
-                if (pl.pos[0] - drop["pos"][0]) ** 2 + (pl.pos[1] - drop["pos"][1]) ** 2 < r2:
+                if ((pl.pos[0] - drop["pos"][0]) ** 2 + (pl.pos[1] - drop["pos"][1]) ** 2 < r2
+                        and abs(pl.pos[2] - drop["pos"][2]) < 2.5):
                     kind = drop["kind"]
                     if kind == "lit_energy":
                         pl.lit_energy += 1     # НЕ ресурс и не очки — расходник на пчёл
@@ -1423,8 +1424,8 @@ class World:
             if pl.dead and now >= pl.respawn_at:
                 pl.dead = False
                 pl.hp = C.PLAYER_MAX_HP
-                # всегда на изначальной точке спавна (южная яма)
-                pl.pos = [random.uniform(-8, 8), random.uniform(-20, -12), 0.0]
+                # респавн рядом с центральной статуей (витрина у (0,0))
+                pl.pos = [random.uniform(-3, 3), random.uniform(4, 8), 0.0]
 
     def _check_wipe(self, now):
         """Если ВСЕ игроки мертвы — сброс фазы до нулевой (заново с 1-й волны),
@@ -1642,6 +1643,9 @@ class World:
             self.bk_cup_shots.clear()
             self.black_king = False
             self.cup_spots = [False] * len(CUP_SPOTS)
+            # запустить новую волну сразу после победы над BLACK KING
+            self._wave_pending = True
+            self.next_wave_at = now + C.WAVE_DELAY
 
     def _kill_bk_minion(self, mid, owner_id, now):
         m = self.bk_minions.pop(mid, None)

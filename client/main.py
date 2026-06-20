@@ -1748,6 +1748,15 @@ class Roblox2(ShowBase):
         self.particles.update(dt)
         if controllable:
             self._move(dt)
+        elif self.state == "PAUSE" and self.world_built and not self.on_ground:
+            # пауза не должна останавливать физику — продолжаем гравитацию
+            self.vz += C.GRAVITY * dt
+            self.pos.z += self.vz * dt
+            gz = support_z(self.pos.x, self.pos.y, self.pos.z)
+            if self.vz <= 0 and self.pos.z <= gz:
+                self.pos.z = gz
+                self.vz = 0.0
+                self.on_ground = True
         self._update_bk_cutscene(dt)   # кат-сцена появления управляет камерой
         self._update_bk_death_cutscene(dt)  # кат-сцена смерти
         if not self._bk_cutscene and not self._bk_death_cs:
@@ -1890,7 +1899,7 @@ class Roblox2(ShowBase):
                 and on_jump_pad(self.pos.x, self.pos.y)):
             self.vz = C.JUMP_PAD_BOOST          # подбрасывает на верхний уровень
             self.on_ground = False
-        elif self.keys["jump"] and self.on_ground and not self.chat_active:
+        elif self.keys["jump"] and self.on_ground and not self.chat_active and not self.is_dead:
             self.vz = C.PLAYER_JUMP
             self.on_ground = False
         self.vz += C.GRAVITY * dt
@@ -2044,6 +2053,13 @@ class Roblox2(ShowBase):
         elif kind == "bk_defeated":
             self._add_chat_line(f"=== BLACK KING ПОВЕРЖЕН! {msg.get('by')} стал легендой! +50 всем! ===")
             self._play_oneshot(AC.SFX_BLACK_KING_DEATH)
+            # взрыв частиц на месте каждого миньона перед их исчезновением
+            for mid, mnode in list(self.bk_minion_nodes.items()):
+                if mnode and not mnode.isEmpty():
+                    mp = mnode.getPos()
+                    self.particles.burst([mp.x, mp.y, mp.z + 0.5], count=14,
+                                        color=(0.5, 0.0, 1.0, 1), speed=5.0,
+                                        size=0.4, life=1.0, grav=-3.0, spread=1.5, up=0.8)
             pos = msg.get("pos", [0.0, 0.0])
             self._start_bk_death_cutscene(pos[0], pos[1])
         elif kind == "bk_voice":
@@ -2086,9 +2102,10 @@ class Roblox2(ShowBase):
             self._play_oneshot(AC.SFX_COCKROACH_DEATH, volume=self._vol_at(pos[0], pos[1]),
                                rate=1.5)
         elif kind == "wipe":
-            self._add_chat_line("[ВАЙП] все погибли - фаза сброшена, начинаем заново!")
-            # после вайпа возвращаем основную тему (могла остаться боссовая)
-            if not self.black_king:
+            if self.black_king:
+                self._add_chat_line("[ВАЙП] все погибли! БЛЭК КИНГ продолжает охоту...")
+            else:
+                self._add_chat_line("[ВАЙП] все погибли - начинаем заново с волны 1!")
                 self._play_music(AC.MUSIC_PHASE1)
         elif kind == "boss_gas":
             pos = msg.get("pos", [0, 0])
@@ -2194,7 +2211,14 @@ class Roblox2(ShowBase):
             pid = int(pid_str)
             if pid == self.my_id:
                 self._my_snapshot = snap
+                was_dead = self.is_dead
                 self.is_dead = bool(snap.get("dead"))
+                # при respawn — принять позицию с сервера, иначе игрок остаётся на месте смерти
+                if was_dead and not self.is_dead:
+                    sp = snap.get("pos", [self.pos.x, self.pos.y, self.pos.z])
+                    self.pos.x, self.pos.y, self.pos.z = sp[0], sp[1], sp[2]
+                    self.vz = 0.0
+                    self.on_ground = True
                 hp = snap.get("hp", self._prev_hp)
                 if (hp < self._prev_hp - 0.5 and not self.is_dead
                         and self._hurt_cd <= 0):
@@ -2739,8 +2763,9 @@ class Roblox2(ShowBase):
             self._shake(1.2)
             self._play_music(AC.MUSIC_PHASE1)
             self.hud_root.show()
-            # сбросить ночной фильтр
+            # сбросить ночной фильтр немедленно
             self._bk_night_alpha = 0.0
+            self._bk_night_overlay.hide()
 
     def _update_remotes(self, dt):
         pass  # обновляются в _apply_snapshot

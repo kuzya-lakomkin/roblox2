@@ -1,0 +1,2500 @@
+"""Клиент Roblox 2 (Panda3D, вид от первого лица).
+
+Запуск:  python -m client.main --name Стёпа --host 127.0.0.1
+"""
+
+import argparse
+import json as _json_mod
+import math
+import sys
+import urllib.request as _urllib_req
+
+from direct.gui.DirectGui import DirectEntry
+from direct.showbase.ShowBase import ShowBase
+from direct.task import Task
+from panda3d.core import (AmbientLight, AntialiasAttrib, AudioSound, CardMaker,
+                          DirectionalLight, NodePath, TextNode,
+                          TransparencyAttrib, Vec2, Vec3,
+                          WindowProperties, loadPrcFileData)
+
+from common import config as C
+from common.citydata import (building_rects, resolve_collision, support_z,
+                             on_jump_pad, CUP_SPOTS)
+from client.network import NetworkClient
+from client.primitives import make_box
+from client.procgen import (make_sphere, make_cockroach, make_bee, make_boss,
+                            make_neon_ant, make_slit, make_cup, make_bk_minion)
+from client.citymap import build_city, build_spawn_pillar, SKY
+from client.ui import (MainMenu, PauseMenu, SettingsMenu, InfoScreen,
+                       LoginScreen, RegisterScreen, KeyBindingsScreen,
+                       DEFAULT_BINDINGS)
+from client.assets import load_sound, load_font, load_music, load_model, load_texture
+from client.particles import ParticleSystem
+from client import asset_config as AC
+from direct.filter.CommonFilters import CommonFilters
+
+def _http_post(url: str, data: dict) -> dict:
+    """Синхронный HTTP POST без внешних зависимостей."""
+    try:
+        payload = _json_mod.dumps(data).encode()
+        req = _urllib_req.Request(url, payload, {"Content-Type": "application/json"})
+        with _urllib_req.urlopen(req, timeout=8) as r:
+            return _json_mod.loads(r.read())
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+loadPrcFileData("", "window-title SWAGA")
+loadPrcFileData("", "sync-video true")
+# сглаживание (антиалиасинг): MSAA по краям геометрии + анизотропная фильтрация текстур
+loadPrcFileData("", "framebuffer-multisample 1")
+loadPrcFileData("", "multisamples 4")
+loadPrcFileData("", "texture-anisotropic-degree 8")
+
+MOUSE_SENS = 0.12
+# цвета червей в той же синтвейв-гамме (циан/розовый/фиолет/тил/сине-фиолет)
+PLAYER_COLORS = [
+    (0.16, 0.89, 0.91, 1), (1.00, 0.30, 0.55, 1), (0.62, 0.31, 0.87, 1),
+    (0.45, 0.40, 0.95, 1), (0.20, 0.80, 0.72, 1), (0.95, 0.55, 0.85, 1),
+]
+# цвета дропа по типу (fallback-кубик, если нет модели)
+DROP_COLORS = {
+    "honey": (1.0, 0.78, 0.15, 1),       # мёд — янтарный
+    "syrup": (0.55, 1.0, 0.15, 1),       # сироп — кислотно-зелёный
+    "mayo": (0.97, 0.97, 0.92, 1),       # майонез — белый
+    "lit_energy": (0.35, 0.95, 1.0, 1),  # LIT ENERGY — неоново-голубой
+    "cup": (0.95, 0.95, 0.96, 1),        # белый пластиковый стакан
+    "health": (0.95, 0.20, 0.25, 1),     # аптечка — красная
+}
+
+
+class WormModel:
+    """Анимированный червь-игрок: тело-дуга от хвоста (стелется по земле) к голове
+    с глазами. Плавные процедурные анимации покоя/ходьбы/прыжка и эмоций. Один и тот
+    же риг используют и чужие аватары, и локальный игрок (чтобы видеть свои анимации).
+
+    Иерархия: root (позиция/курс задаёт владелец) -> anim (анимационные повороты/
+    масштаб) -> сегменты тела. Голова - последний сегмент, глаза - её дети.
+    """
+
+    N = 9
+
+    def __init__(self, body_color=(0.3, 0.75, 0.35, 1), eye_color=(0.05, 0.05, 0.05, 1)):
+        self.root = NodePath("worm")
+        self.anim = self.root.attachNewNode("anim")
+        self.segs = []
+        self.base = []     # (x, y, z) базовая поза сегмента
+        for i in range(self.N):
+            s = i / (self.N - 1)                     # 0 хвост .. 1 голова
+            y = -1.35 + 1.5 * s                      # хвост позади (-Y), голова спереди
+            z = 0.16 + 1.7 * (s ** 1.45)             # хвост долго стелется, потом подъём
+            r = 0.16 + 0.34 * math.sin(math.pi * (0.16 + 0.7 * s))  # тонкий хвост, тело потолще
+            seg = make_sphere(1.0, 10, 12, body_color)
+            shade = 0.82 + 0.18 * s
+            seg.setColorScale(shade, shade, shade, 1)
+            seg.reparentTo(self.anim)
+            seg.setPos(0, y, z)
+            seg.setScale(r)
+            self.segs.append(seg)
+            self.base.append((0.0, y, z))
+        self.head = self.segs[-1]
+        # глаза - дети головы (двигаются с её анимациями)
+        for sx in (-1, 1):
+            eye = make_sphere(1.0, 8, 8, (1, 1, 1, 1))
+            eye.reparentTo(self.head)
+            eye.setPos(sx * 0.42, 0.82, 0.28)
+            eye.setScale(0.4)
+            pupil = make_sphere(1.0, 6, 6, eye_color)
+            pupil.reparentTo(self.head)
+            pupil.setPos(sx * 0.42, 1.02, 0.28)
+            pupil.setScale(0.2)
+        self._t = 0.0
+        self._sz = 1.0
+        self._first_person = False
+
+    def set_first_person(self, fp):
+        """В виде от первого лица прячем голову+шею, чтобы не закрывали камеру,
+        но тело/хвост остаются видимыми (игрок видит свои анимации)."""
+        if fp == self._first_person:
+            return
+        self._first_person = fp
+        for seg in self.segs[-2:]:
+            seg.hide() if fp else seg.show()
+
+    def update(self, dt, moving=False, on_ground=True, vz=0.0, emote=None, dead=False):
+        if dead:
+            self.root.hide()
+            return
+        self.root.show()
+        self._t += dt
+        t = self._t
+        if emote == "dance":
+            wave_speed, amp, lift = 13.0, 0.30, 0.12
+        elif moving:
+            wave_speed, amp, lift = 10.0, 0.16, 0.05
+        else:
+            wave_speed, amp, lift = 2.4, 0.05, 0.0     # покой: лёгкое «дыхание»
+        N = len(self.segs)
+        for i, seg in enumerate(self.segs):
+            bx, by, bz = self.base[i]
+            s = i / (N - 1)
+            phase = t * wave_speed - s * 3.4           # бегущая волна хвост->голова
+            sway = math.sin(phase) * amp * (0.3 + s)   # голова виляет сильнее
+            bob = math.cos(phase) * amp * 0.5 * s + lift * math.sin(t * 3 + s * 2)
+            seg.setPos(bx + sway, by, bz + bob)
+        # прыжок: плавно вытягиваем тело по вертикали
+        target_sz = 1.0 + max(-0.18, min(0.28, vz * 0.03)) if not on_ground else 1.0
+        self._sz += (target_sz - self._sz) * min(1.0, 8 * dt)
+        self.anim.setSz(self._sz)
+        # эмоции (повороты anim-узла, не конфликтуют с курсом на root)
+        r_t = h_t = z_t = 0.0
+        p_head = 0.0
+        if emote == "flex":
+            r_t = 14 * math.sin(t * 9)                 # качается, «играет мышцами»
+        elif emote == "dance":
+            h_t = 20 * math.sin(t * 6)                 # вертится
+            z_t = abs(math.sin(t * 6)) * 0.45          # подпрыгивает
+        elif emote == "wave":
+            p_head = 22 * math.sin(t * 7)              # голова кивает-машет
+        cur_r, cur_h = self.anim.getR(), self.anim.getH()
+        self.anim.setR(cur_r + (r_t - cur_r) * min(1.0, 10 * dt))
+        self.anim.setH(cur_h + (h_t - cur_h) * min(1.0, 10 * dt))
+        self.anim.setZ(self.anim.getZ() + (z_t - self.anim.getZ()) * min(1.0, 10 * dt))
+        self.head.setP(self.head.getP() + (p_head - self.head.getP()) * min(1.0, 12 * dt))
+
+    def destroy(self):
+        self.root.removeNode()
+
+
+class RemoteAvatar:
+    """Визуальное представление другого игрока: анимированный червь + ник + эмоция."""
+
+    def __init__(self, parent, pid, name, font=None):
+        color = PLAYER_COLORS[pid % len(PLAYER_COLORS)]
+        self.root = parent.attachNewNode(f"player{pid}")
+
+        self.model = WormModel(body_color=color)
+        self.model.root.reparentTo(self.root)
+
+        # ник
+        tn = TextNode(f"name{pid}")
+        if font:
+            tn.setFont(font)
+        tn.setText(name)
+        tn.setAlign(TextNode.ACenter)
+        tn.setTextColor(1, 1, 1, 1)
+        tn.setCardColor(0, 0, 0, 0.55)
+        tn.setCardAsMargin(0.2, 0.2, 0.1, 0.1)
+        tn.setCardDecal(True)
+        self.nametag = self.root.attachNewNode(tn)
+        self.nametag.setScale(0.5)
+        self.nametag.setZ(2.9)
+        self.nametag.setBillboardPointEye()
+        self.nametag.setLightOff(1)
+        self.nametag.setDepthOffset(1)
+
+        # подпись эмоции
+        self.emote_tn = TextNode(f"emote{pid}")
+        if font:
+            self.emote_tn.setFont(font)
+        self.emote_tn.setAlign(TextNode.ACenter)
+        self.emote_tn.setTextColor(1, 1, 0.3, 1)
+        self.emote_np = self.root.attachNewNode(self.emote_tn)
+        self.emote_np.setScale(0.6)
+        self.emote_np.setZ(3.4)
+        self.emote_np.setBillboardPointEye()
+        self.emote_np.hide()
+
+        self._prev = None
+
+    def update(self, snap, dt):
+        x, y, z = snap["pos"]
+        self.root.setPos(x, y, z)
+        self.root.setH(snap["h"])
+        dead = bool(snap.get("dead"))
+        # вывести параметры анимации из снапшота (скорость/высота)
+        moving, vz, on_ground = False, 0.0, True
+        if self._prev is not None and dt > 0:
+            dx, dy, dz = x - self._prev[0], y - self._prev[1], z - self._prev[2]
+            moving = (dx * dx + dy * dy) > (0.03 * 0.03)
+            vz = dz / dt
+            on_ground = z <= 0.06 and abs(vz) < 1.0
+        self._prev = (x, y, z)
+        emote = snap.get("emote")
+        self.model.update(dt, moving=moving, on_ground=on_ground, vz=vz,
+                          emote=emote, dead=dead)
+        if dead or not emote:
+            self.emote_np.hide()
+        else:
+            label = {"flex": "ФЛЕКС!", "wave": "привет!", "dance": "ТАНЦЫ!"}.get(emote, emote)
+            self.emote_tn.setText(label)
+            self.emote_np.show()
+
+    def destroy(self):
+        self.root.removeNode()
+
+
+class WorldBar:
+    """3D-полоса прогресса над сущностью (билборд): рамка + заполняющаяся часть + подпись.
+
+    Геометрия лежит в плоскости X-Z (ширина по X, высота по Z), тонкая по Y.
+    setBillboardPointEye разворачивает её лицом к камере. Заполнение растёт слева.
+    """
+
+    def __init__(self, parent, label="", width=2.6, height=0.34,
+                 fill_color=(1.0, 0.85, 0.2, 1), font=None):
+        self.w = width
+        self.root = parent.attachNewNode("worldbar")
+        self.root.setBillboardPointEye()
+        self.root.setLightOff(1)
+        self.root.setTransparency(TransparencyAttrib.MAlpha)
+        self.root.setDepthOffset(1)
+
+        frame = make_box(width + 0.14, 0.04, height + 0.14, (0.04, 0.04, 0.05, 0.9))
+        frame.reparentTo(self.root)
+        frame.setDepthOffset(1)
+
+        empty = make_box(width, 0.04, height, (0.22, 0.22, 0.25, 1))
+        empty.reparentTo(self.root)
+        empty.setY(-0.01)
+        empty.setDepthOffset(2)
+
+        self._fill_color = fill_color
+        self.fill = make_box(width, 0.04, height, fill_color)
+        self.fill.reparentTo(self.root)
+        self.fill.setY(-0.02)
+        self.fill.setDepthOffset(3)
+
+        self.tn = TextNode("barlabel")
+        if font:
+            self.tn.setFont(font)
+        self.tn.setAlign(TextNode.ACenter)
+        self.tn.setTextColor(1, 1, 1, 1)
+        self.tn.setText(label)
+        self.label_np = self.root.attachNewNode(self.tn)
+        self.label_np.setScale(0.42)
+        self.label_np.setPos(0, -0.03, height / 2 + 0.28)
+        self.label_np.setDepthOffset(3)
+        self.set_fraction(0.0)
+
+    def set_fraction(self, frac):
+        f = max(0.0, min(1.0, frac))
+        self.fill.setScale(max(1e-4, f), 1, 1)
+        self.fill.setX(-self.w / 2 + f * self.w / 2)
+
+    def set_label(self, text):
+        self.tn.setText(text)
+
+    def set_fill_color(self, color):
+        self.fill.setColor(*color)
+
+    def set_pos(self, x, y, z):
+        self.root.setPos(x, y, z)
+
+    def set_scale(self, s):
+        self.root.setScale(s)
+
+    def destroy(self):
+        self.root.removeNode()
+
+
+class Roblox2(ShowBase):
+    def __init__(self, name, host, port, auth_server=""):
+        super().__init__()
+        self.player_name = name
+        self.host = host
+        self.port = port
+        self.auth_token = ""           # JWT/token от auth-сервера
+        self._auth_server = auth_server or C.AUTH_SERVER_URL.replace("http://", "")
+        # загрузить настройки (биндинги + последний auth_server)
+        settings = self._load_settings()
+        self.key_bindings = settings["keybindings"]
+        if settings.get("auth_server"):
+            self._auth_server = settings["auth_server"]
+        self.my_id = None
+        self.net = None
+        self.world_built = False         # игровое состояние (HUD/ввод/частицы) построено
+        self.world_scene_built = False   # геометрия карты построена (для фона меню тоже)
+        self.state = "AUTH"         # AUTH / HUB / COMBAT / PAUSE / SETTINGS / FARM / SHOP
+        self.phase = "-"
+        self._settings_return = "HUB"
+        # keys нужен до _build_game — _setup_game_input вызывается из настроек в меню
+        self.keys = {k: False for k in ("forward", "backward", "left", "right", "jump")}
+        self._fullscreen = False
+        self._music = None          # музыка живёт уже в меню (не только в бою)
+        self._music_path = None
+        self._menu_cam_t = 0.0      # фаза прокрутки камеры на фоне меню
+
+        self.setBackgroundColor(*SKY[:3])
+        self.render.setAntialias(AntialiasAttrib.MMultisample)   # MSAA на всю сцену
+        self.disableMouse()
+        self.camLens.setFov(85)          # широкий обзор (убираем эффект «зума»)
+        self.camLens.setNear(0.2)
+        self._go_native_fullscreen()     # по умолчанию - полный экран в родном разрешении
+        self._setup_bloom()              # неоновое свечение (постэффект)
+        self.default_font = self._load_font()    # системный (дефолт, есть кириллица)
+        self.fonts = self._load_role_fonts()     # шрифты по элементам игры
+        self.font = self.default_font            # запасной общий
+
+        # карта строится сразу (НЕ подключаясь к серверу) — она же фон главного меню;
+        # подключение к серверу происходит только при входе в фазу 1 (start_combat).
+        self._build_world_scene()
+
+        # бой
+        self.weapon = "syrup"
+        self.gas_until = 0.0
+        self.camera_mode = "first"   # вход от первого лица (C — переключить на 3-е)
+
+        # экраны интерфейса
+        self.login_screen    = LoginScreen(self)
+        self.register_screen = RegisterScreen(self)
+        self.main_menu       = MainMenu(self)
+        self.settings_menu   = SettingsMenu(self)
+        self.keybindings_screen = KeyBindingsScreen(self)
+        self.pause_menu      = PauseMenu(self)
+        self.farm_screen = InfoScreen(self, "УЛЕЙ - ФЕРМА (Фаза 3)", [
+            "Здесь будут соты, пчёлы и ресурсы:",
+            "зелёный сироп, майонез, мёд.",
+            "(каркас фазы - экономика в разработке)",
+        ])
+        self.shop_screen = InfoScreen(self, "МАГАЗИН", [
+            "Скины, шляпы и улучшения.",
+            "(каркас - товары в разработке)",
+        ])
+
+        self.accept("escape", self._on_escape)
+        self.taskMgr.add(self.update, "update")
+        # Показываем экран входа (AUTH). Если авторизация отключена — сразу HUB.
+        if not C.AUTH_ENABLED:
+            self._enter_hub()
+        else:
+            self.login_screen.show()
+            self._set_menu_blur(True)
+            self._play_music(AC.MUSIC_HUB)
+
+    # ---------- загрузка/сохранение настроек ----------------------------------------
+    def _load_settings(self) -> dict:
+        import os
+        path = os.path.join(os.path.dirname(__file__), "..", "client_settings.json")
+        defaults = {
+            "keybindings": dict(DEFAULT_BINDINGS),
+            "auth_server": C.AUTH_SERVER_URL.replace("http://", ""),
+        }
+        try:
+            with open(path, encoding="utf-8") as f:
+                saved = _json_mod.load(f)
+            # обновляем поверхностно — старые ключи остаются, новые мержатся
+            if "keybindings" in saved:
+                merged = dict(DEFAULT_BINDINGS)
+                merged.update(saved["keybindings"])
+                saved["keybindings"] = merged
+            defaults.update(saved)
+        except Exception:
+            pass
+        return defaults
+
+    def _save_settings(self):
+        import os
+        path = os.path.join(os.path.dirname(__file__), "..", "client_settings.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                _json_mod.dump({
+                    "keybindings": self.key_bindings,
+                    "auth_server": self._auth_server,
+                }, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+    # ---------- авторизация --------------------------------------------------------
+    def _enter_hub(self):
+        """Перейти в хаб после успешной авторизации (или при AUTH_ENABLED=False)."""
+        self.state = "HUB"
+        self._hide_all_screens()
+        self.main_menu.show()
+        self._set_menu_blur(True)
+        self._play_music(AC.MUSIC_HUB)
+
+    def do_login(self, login: str, password: str, auth_server: str):
+        self._auth_server = auth_server.strip()
+        url = f"http://{self._auth_server}/login"
+        result = _http_post(url, {"login": login, "password": password})
+        if result.get("ok"):
+            self.auth_token  = result.get("token", "")
+            self.player_name = result.get("nick", login)
+            self._save_settings()
+            self.main_menu.set_nick(self.player_name)
+            self._enter_hub()
+        else:
+            self.login_screen.show_error(result.get("error", "Ошибка подключения к auth-серверу"))
+
+    def do_register(self, login: str, nick: str, password: str, auth_server: str):
+        self._auth_server = auth_server.strip()
+        url = f"http://{self._auth_server}/register"
+        result = _http_post(url, {"login": login, "nick": nick, "password": password})
+        if result.get("ok"):
+            # автоматический вход после регистрации
+            self.do_login(login, password, auth_server)
+        else:
+            self.register_screen.show_error(result.get("error", "Ошибка регистрации"))
+
+    def open_keybindings(self):
+        self.settings_menu.hide()
+        self.keybindings_screen.show()
+
+    # ---------- построение игровой сцены (лениво, один раз) ----------
+    def _build_game(self):
+        if self.world_built:
+            return
+        self._build_world_scene()   # геометрия карты (уже построена для фона меню)
+
+        self.pos = Vec3(0, -14, 0)   # спавн на площади перед столбом SWAGA
+        self.vz = 0.0
+        self.heading = 0.0
+        self.pitch = 0.0
+        self.on_ground = True
+
+        self.keys = {k: False for k in ("forward", "backward", "left", "right", "jump")}
+        self.mouse_look = True
+        self.chat_active = False
+
+        self.remote = {}
+        self.ant_nodes = {}
+        self._ant_prev = {}
+        self.neon_ant_nodes = {}     # nid -> NodePath (синие стрелки)
+        self.ant_shot_nodes = {}     # asid -> NodePath (шкибиди-зелье)
+        self.neon_alive = 0
+        self.shot_nodes = {}
+        self.bee_nodes = {}
+        self.drop_nodes = {}     # did -> NodePath
+        self.boss_shot_nodes = {}  # bsid -> NodePath
+        self.slit_nodes = {}       # sid -> NodePath (ЩЕЛЬ)
+        self.slit_bars = {}        # sid -> WorldBar (визуальная шкала над щелью)
+        self.slit_time = 0.0       # сколько секунд осталось на событие щелей
+        self._slit_music_on = False  # играет ли сейчас музыка события щелей
+        self._slit_prev_frac = {}    # sid -> прошлая доля заполнения (для звука calm)
+        self._slit_calm_snd = None   # звук удовлетворения щели (переигрывается по окончании)
+        self._roach_laugh_snd = None  # ржач тараканов во время щели (по окончании предыдущего)
+        self.boss_node = None
+        self._boss_is_model = False
+        self.bk_boss_node = None
+        self._bk_is_model = False
+        self.bk_boss_bar = None
+        self.bk_minion_nodes = {}   # mid -> NodePath
+        self.bk_boss_info = None
+        self._bk_hit_cd = 0.0
+        self._prev_bk_hp = C.BLACK_KING_HP
+        # кат-сцена BLACK KING
+        self._bk_cutscene = False
+        self._bk_cutscene_t = 0.0
+        self._bk_cup_nodes = []     # 4 вращающихся стакана (только в кат-сцене)
+        # фаза 2 BLACK KING
+        self.bk_shot_nodes = {}        # bksid -> NodePath (фиолетовые лазеры)
+        self.bk_lc_nodes = {}          # cid -> NodePath (ожившие стаканы)
+        self.bk_cup_shot_nodes = {}    # csid -> NodePath (зелёные замедляющие)
+        self._bk_syrup_timer = 0.0     # таймер частиц сиропа из угловых стаканов
+        self.chat_lines = []
+        self._state_accum = 0.0
+        self._building_rects = building_rects(pad=0.0)
+        self.wave = 0
+        self.alive_ants = 0
+        self.boss_info = None
+        self.is_dead = False
+        self.boss_bar = None       # WorldBar — шкала Уважения над боссом
+        self.lit_energy = 0        # запас LIT ENERGY (из снапшота)
+        self.bee_time = 0.0        # сколько секунд ещё доступны пчёлы (из снапшота)
+        self.player_slow = 0.0     # остаток замедления от газа босса (из снапшота)
+        self.cups = 0              # белые стаканы в руках (из снапшота)
+        self.cup_spots = [False] * 4   # заняты ли 4 угловых пьедестала
+        self.cup_spot_nodes = []   # узлы стаканов на пьедесталах
+        self.black_king = False
+        self.firing = False        # ЛКМ зажата (струя)
+        self._fire_accum = 0.0
+        self._spray_start_snd = None
+        self._spray_loop_snd = None
+        self._spray_loop_task = None
+
+        # звук (музыка инициализируется в __init__ и играет уже в меню)
+        self._worm_step_snd = None
+        self._roach_step_snd = None
+        self._prev_hp = C.PLAYER_MAX_HP
+        self._prev_boss_respect = 0
+        self._hurt_cd = 0.0          # антиспам звука урона
+        self._boss_hit_cd = 0.0
+        self._boss_voice_at = 0.0    # когда следующая реплика босса
+
+        # локальный червь (анимированный — игрок видит и свои анимации тоже)
+        self.local_worm = WormModel(body_color=(0.35, 0.95, 0.80, 1))
+        self.local_worm.root.reparentTo(self.render)
+        # отброс взрывом босса (горизонтальный импульс, затухает) + тряска камеры
+        self.knockback = Vec3(0, 0, 0)
+        self._shake_amp = 0.0
+
+        # партиклы (струи, смерть тараканов)
+        self.particles = ParticleSystem(self.render)
+
+        self._setup_game_input()
+        self._setup_hud()
+        self.world_built = True
+        # подключение к серверу делает start_combat() через _connect() — НЕ здесь
+
+    def _connect(self):
+        """Подключиться к серверу и войти в игру (только при входе в фазу 1)."""
+        self.my_id = None
+        self._prev_hp = C.PLAYER_MAX_HP
+        self._prev_boss_respect = 0
+        self.net = NetworkClient(self.host, self.port)
+        self.net.start()
+        self.net.send({"t": "join", "name": self.player_name, "token": self.auth_token})
+        self._play_oneshot(AC.SFX_JOIN_PHASE1)   # звук входа на сервер
+
+    def _disconnect(self):
+        """Отключиться от сервера и убрать всех сетевых сущностей со сцены."""
+        if self.net:
+            self.net.stop()
+            self.net = None
+        self.my_id = None
+        self._clear_entities()
+
+    def _clear_entities(self):
+        """Удалить узлы игроков/врагов/снарядов/дропа (после отключения)."""
+        if not self.world_built:
+            return
+        for av in self.remote.values():
+            av.destroy()
+        self.remote.clear()
+        for d in (self.ant_nodes, self.neon_ant_nodes, self.ant_shot_nodes,
+                  self.shot_nodes, self.bee_nodes, self.drop_nodes,
+                  self.boss_shot_nodes, self.slit_nodes):
+            for n in d.values():
+                n.removeNode()
+            d.clear()
+        for bar in self.slit_bars.values():
+            bar.destroy()
+        self.slit_bars.clear()
+        self._slit_prev_frac.clear()
+        self.slit_time = 0.0
+        self._ant_prev.clear()
+        if self.boss_node is not None:
+            self.boss_node.removeNode()
+            self.boss_node = None
+        if self.boss_bar is not None:
+            self.boss_bar.destroy()
+            self.boss_bar = None
+        if self.bk_boss_node is not None:
+            self.bk_boss_node.removeNode()
+            self.bk_boss_node = None
+        if self.bk_boss_bar is not None:
+            self.bk_boss_bar.destroy()
+            self.bk_boss_bar = None
+        for n in self.bk_minion_nodes.values():
+            n.removeNode()
+        self.bk_minion_nodes.clear()
+        self.bk_boss_info = None
+        self._prev_bk_hp = C.BLACK_KING_HP
+        self._bk_cutscene = False
+        self._bk_cutscene_t = 0.0
+        for n in self._bk_cup_nodes:
+            n.removeNode()
+        self._bk_cup_nodes = []
+        for n in self.bk_shot_nodes.values():
+            n.removeNode()
+        self.bk_shot_nodes.clear()
+        for n in self.bk_lc_nodes.values():
+            n.removeNode()
+        self.bk_lc_nodes.clear()
+        for n in self.bk_cup_shot_nodes.values():
+            n.removeNode()
+        self.bk_cup_shot_nodes.clear()
+        if hasattr(self, "_bk_night_overlay") and self._bk_night_overlay:
+            self._bk_night_overlay.setColor(0.05, 0.0, 0.12, 0)
+            self._bk_night_overlay.hide()
+        self._bk_night_alpha = 0.0
+        for n in self.cup_spot_nodes:
+            n.removeNode()
+        self.cup_spot_nodes = []
+        self.cup_spots = [False] * 4
+        self.cups = 0
+        self.black_king = False
+        self.wave = 0
+        self.alive_ants = 0
+        self.neon_alive = 0
+        self.boss_info = None
+        self.is_dead = False
+
+    # ---------- переходы между состояниями / фазами ----------
+    def _hide_all_screens(self):
+        for s in (self.login_screen, self.register_screen, self.main_menu,
+                  self.pause_menu, self.settings_menu, self.keybindings_screen,
+                  self.farm_screen, self.shop_screen):
+            s.hide()
+
+    def start_combat(self):
+        if not C.AUTH_ENABLED:
+            self.player_name = self.main_menu.get_name()
+        self._hide_all_screens()
+        self._build_game()
+        if self.net is None:             # подключение к серверу — при входе в фазу 1
+            self._connect()
+        self.state = "COMBAT"
+        self.phase = "ТРАВЛЯ"
+        self._set_menu_blur(False)       # в бою — чёткая картинка
+        self.hud_root.show()
+        self._set_mouse_captured(True)
+        # музыка фазы (боссовая включится по событию)
+        self._play_music(AC.MUSIC_BOSS if self.boss_info else AC.MUSIC_PHASE1)
+
+    def resume(self):
+        self.pause_menu.hide()
+        self.state = "COMBAT"
+        self._set_menu_blur(False)       # снять размытие паузы
+        self.hud_root.show()
+        self._set_mouse_captured(True)
+
+    def pause(self):
+        # мультиплеер НЕ останавливаем — мир продолжает жить, просто размываем фон
+        self.state = "PAUSE"
+        self._set_mouse_captured(False)
+        self.firing = False
+        self._stop_spray_sound()
+        self.chat_active = False
+        if hasattr(self, "entry"):
+            self.entry.hide()
+        self.hud_root.hide()
+        self._set_menu_blur(True)        # размыть мир за меню паузы
+        self.pause_menu.show()
+
+    def goto_hub(self):
+        self._hide_all_screens()
+        if self.world_built:
+            self.hud_root.hide()
+            self.firing = False
+            self._stop_spray_sound()
+            self._stop_step_loops()
+        self._disconnect()               # выход в меню = отключение от сервера
+        self.state = "HUB"
+        self.phase = "-"
+        self._set_mouse_captured(False)
+        self._set_menu_blur(True)        # вернуть размытый фон меню
+        self._play_music(AC.MUSIC_HUB)   # вернуть музыку меню
+        self.main_menu.show()
+
+    def goto_farm(self):
+        self._hide_all_screens()
+        self.state = "FARM"
+        self.farm_screen.show()
+
+    def goto_shop(self):
+        self._hide_all_screens()
+        self.state = "SHOP"
+        self.shop_screen.show()
+
+    def open_settings(self):
+        self._settings_return = self.state
+        self.main_menu.hide()
+        self.pause_menu.hide()
+        self.keybindings_screen.hide()
+        self.state = "SETTINGS"
+        self.settings_menu.show()
+
+    def close_settings(self):
+        self.settings_menu.hide()
+        self.keybindings_screen.hide()
+        if self._settings_return == "PAUSE":
+            self.state = "PAUSE"
+            self.pause_menu.show()
+        else:
+            self.state = "HUB"
+            self.main_menu.show()
+
+    def apply_video_settings(self, w, h, fullscreen):
+        self._fullscreen = fullscreen
+        if not hasattr(self.win, "requestProperties"):
+            return
+        props = WindowProperties()
+        props.setFullscreen(fullscreen)
+        props.setSize(w, h)
+        self.win.requestProperties(props)
+
+    def quit_game(self):
+        if self.net:
+            self.net.stop()
+        self.userExit()
+
+    # ---------- окно / постэффекты ----------
+    def _go_native_fullscreen(self):
+        # только для настоящего окна (не offscreen-буфера)
+        from panda3d.core import GraphicsWindow
+        if not isinstance(self.win, GraphicsWindow):
+            return
+        try:
+            w = self.pipe.getDisplayWidth()
+            h = self.pipe.getDisplayHeight()
+            if w <= 0 or h <= 0:
+                return
+            props = WindowProperties()
+            props.setFullscreen(True)
+            props.setSize(w, h)
+            self.win.requestProperties(props)
+            self._fullscreen = True
+        except Exception:
+            pass
+
+    def _setup_bloom(self):
+        # неоновое свечение: bloom по ярким (full-bright) неон-элементам
+        try:
+            self.filters = CommonFilters(self.win, self.cam)
+            self.filters.setBloom(blend=(0.3, 0.4, 0.3, 0.0), mintrigger=0.55,
+                                  maxtrigger=1.0, desat=0.1, intensity=1.5, size="medium")
+        except Exception:
+            self.filters = None
+
+    def _set_menu_blur(self, on):
+        # лёгкое размытие 3D-сцены за меню (на GUI/aspect2d не влияет)
+        if not self.filters:
+            return
+        try:
+            self.filters.setBlurSharpen(0.62 if on else 1.0)  # <1 = размытие, 1 = чётко
+        except Exception:
+            pass
+
+    def _shake(self, amp):
+        """Тряхнуть камеру (взрыв/победа). Амплитуда затухает в _apply_camera."""
+        self._shake_amp = max(getattr(self, "_shake_amp", 0.0), amp)
+
+    def _flash_screen(self, color=(1, 1, 1, 1), duration=1.6, hold=0.35):
+        """Ослепляющая вспышка на весь экран: держит полную яркость `hold` секунд,
+        затем плавно (ease-out) гаснет за оставшееся время. Поверх всего GUI."""
+        cm = CardMaker("flash")
+        cm.setFrameFullscreenQuad()
+        np = self.render2d.attachNewNode(cm.generate())
+        np.setTransparency(TransparencyAttrib.MAlpha)
+        np.setColor(*color)
+        np.setBin("fixed", 1000)
+        np.setDepthTest(False)
+        np.setDepthWrite(False)
+        st = {"t": 0.0}
+        fade = max(0.01, duration - hold)
+
+        def _fade(task):
+            st["t"] += globalClock.getDt()
+            if st["t"] <= hold:
+                k = 1.0
+            else:
+                k = max(0.0, 1.0 - (st["t"] - hold) / fade) ** 0.6   # дольше держит яркость
+            np.setColor(color[0], color[1], color[2], color[3] * k)
+            if st["t"] >= duration:
+                np.removeNode()
+                return task.done
+            return task.cont
+
+        self.taskMgr.add(_fade, "flash_fade")
+
+    def _make_vignette_texture(self, color, size=128):
+        """Текстура-вигнет: прозрачный центр, цветное свечение по краям экрана."""
+        from panda3d.core import PNMImage, Texture
+        img = PNMImage(size, size)
+        img.addAlpha()
+        r, g, b = color[0], color[1], color[2]
+        for y in range(size):
+            for x in range(size):
+                u = abs(x / (size - 1) * 2 - 1)
+                v = abs(y / (size - 1) * 2 - 1)
+                edge = max(u, v)                       # квадратный вигнет (по краям)
+                a = max(0.0, (edge - 0.55) / 0.45) ** 1.5
+                img.setXel(x, y, r, g, b)
+                img.setAlpha(x, y, min(1.0, a))
+        tex = Texture("vignette")
+        tex.load(img)
+        return tex
+
+    def _update_overlays(self, dt):
+        # плавное затемнение при смерти
+        target = 0.72 if self.is_dead else 0.0
+        self._death_alpha += (target - self._death_alpha) * min(1.0, 4.0 * dt)
+        if self._death_alpha > 0.01:
+            self.death_overlay.show()
+            self.death_overlay.setColor(0, 0, 0, self._death_alpha)
+            self.death_node.setText("ВЫ ПОГИБЛИ\nреспаун на спавне...")
+            self.death_node.setTextColor(1.0, 0.3, 0.4, min(1.0, self._death_alpha / 0.6))
+        else:
+            self.death_overlay.hide()
+        # зеленоватый вигнет в зоне газа папани
+        vt = 1.0 if self.player_slow > 0 else 0.0
+        self._vign_alpha += (vt - self._vign_alpha) * min(1.0, 6.0 * dt)
+        if self._vign_alpha > 0.01:
+            self.vignette.show()
+            self.vignette.setColor(1, 1, 1, min(0.65, self._vign_alpha))
+        else:
+            self.vignette.hide()
+
+    def _apply_blast_knockback(self, pos):
+        """Отброс ЛОКАЛЬНОГО игрока от взрыва босса (игрок авторитетен над позицией)."""
+        if not self.world_built or self.is_dead:
+            return
+        dx = self.pos.x - pos[0]
+        dy = self.pos.y - pos[1]
+        d = math.hypot(dx, dy)
+        r = C.BOSS_EXPLOSION_RADIUS
+        if d >= r:
+            return
+        f = C.BOSS_KNOCKBACK * (1.0 - d / r)
+        if d > 0.01:
+            ux, uy = dx / d, dy / d
+        else:
+            import random
+            ang = random.uniform(0, 2 * math.pi)
+            ux, uy = math.cos(ang), math.sin(ang)
+        self.knockback += Vec3(ux * f, uy * f, 0)
+        self.vz = max(self.vz, f * 0.7)     # подкидывает вверх сильнее
+        self.on_ground = False
+        self._shake(min(0.7, f * 0.05))
+
+    # ---------- ресурсы ----------
+    def _load_font(self):
+        import os
+        from panda3d.core import Filename
+        for path in (r"C:\Windows\Fonts\arial.ttf", r"C:\Windows\Fonts\segoeui.ttf",
+                     r"C:\Windows\Fonts\tahoma.ttf", r"C:\Windows\Fonts\calibri.ttf"):
+            if not os.path.exists(path):
+                continue
+            try:
+                f = self.loader.loadFont(str(Filename.fromOsSpecific(path)))
+            except Exception:
+                continue
+            if f and f.isValid():
+                f.setPixelsPerUnit(64)
+                return f
+        return None  # запасной вариант - встроенный шрифт (без кириллицы)
+
+    def _load_role_fonts(self):
+        roles = {
+            "title": AC.FONT_TITLE, "ui": AC.FONT_UI, "hud": AC.FONT_HUD,
+            "chat": AC.FONT_CHAT, "world": AC.FONT_WORLD,
+        }
+        return {r: (load_font(self.loader, p) or self.default_font)
+                for r, p in roles.items()}
+
+    def _font(self, tn, role="hud"):
+        f = self.fonts.get(role) or self.default_font
+        if f:
+            tn.setFont(f)
+        return tn
+
+    # ---------- сцена ----------
+    def _setup_lights(self):
+        # backrooms: ровный тёплый флуоресцентный свет (жёлтый ambient + мягкий сверху)
+        amb = AmbientLight("amb")
+        amb.setColor((0.62, 0.56, 0.40, 1))
+        self.render.setLight(self.render.attachNewNode(amb))
+        ceil = DirectionalLight("ceil")
+        ceil.setColor((0.34, 0.31, 0.24, 1))
+        cnp = self.render.attachNewNode(ceil)
+        cnp.setHpr(-20, -80, 0)        # почти отвесно сверху (как от ламп на потолке)
+        self.render.setLight(cnp)
+
+    def _build_world(self):
+        # спроектированная карта backrooms + витрина SWAGA на спавне
+        build_city(self.render, self.loader)
+        build_spawn_pillar(self.render, self.loader, self.font)
+
+    def _build_world_scene(self):
+        """Построить геометрию карты (свет + город). Без сети — годится и для фона меню."""
+        if self.world_scene_built:
+            return
+        self._setup_lights()
+        self._build_world()
+        self.world_scene_built = True
+
+    def _update_menu_background(self, dt):
+        """Медленно прокручивать камеру над картой — живой фон главного меню."""
+        if not self.world_scene_built or self.state != "HUB":
+            return
+        self._menu_cam_t += dt * 0.05
+        a = self._menu_cam_t
+        r = 30.0
+        self.camera.setPos(math.cos(a) * r, math.sin(a) * r, 17.0)
+        self.camera.lookAt(0, 0, 4.5)
+
+    # ---------- ввод ----------
+    def _setup_game_input(self):
+        """Регистрирует обработчики ввода по текущим key_bindings. Можно вызывать повторно."""
+        kb = self.key_bindings
+        # сначала снимаем старые биндинги движения
+        for k in ("w","a","s","d","space","lshift","rshift","shift",
+                  "q","r","c","f","g","v","enter",
+                  "1","2","3","mouse1","mouse1-up"):
+            self.ignore(k)
+            self.ignore(f"{k}-up")
+
+        def _bind_move(action):
+            key = kb.get(action, "")
+            if key:
+                self.accept(key,        self._set_key, [action, True])
+                self.accept(f"{key}-up", self._set_key, [action, False])
+
+        _bind_move("forward"); _bind_move("backward")
+        _bind_move("left");    _bind_move("right")
+        _bind_move("jump")
+
+        self.accept("mouse1",    self._on_fire_down)
+        self.accept("mouse1-up", self._on_fire_up)
+        self.accept(kb.get("weapon1", "1"), self._set_weapon, ["syrup"])
+        self.accept(kb.get("weapon2", "2"), self._set_weapon, ["mayo"])
+        self.accept(kb.get("weapon3", "3"), self._set_weapon, ["hive"])
+        self.accept(kb.get("gas",  "lshift"), self._gas)
+        self.accept(kb.get("ult",  "q"),      self._ultimate)
+        self.accept(kb.get("place_cup", "r"), self._place_cup)
+        self.accept(kb.get("camera", "c"),    self._toggle_camera)
+        self.accept(kb.get("emote1", "f"), lambda: self._emote("flex"))
+        self.accept(kb.get("emote2", "g"), lambda: self._emote("dance"))
+        self.accept(kb.get("emote3", "v"), lambda: self._emote("wave"))
+        self.accept(kb.get("chat", "enter"), self._toggle_chat)
+        # оконные горячие клавиши (всегда)
+        self.accept("alt-enter", self._toggle_fullscreen)
+        self.accept("control-z", self._minimize)
+
+    def _set_key(self, k, v):
+        self.keys[k] = v
+
+    # ---------- окно ----------
+    def _toggle_fullscreen(self):
+        self._fullscreen = not self._fullscreen
+        props = WindowProperties()
+        props.setFullscreen(self._fullscreen)
+        if self._fullscreen:
+            di = self.pipe.getDisplayInformation()
+            if di and di.getTotalDisplayModes() > 0:
+                props.setSize(di.getDisplayModeWidth(0), di.getDisplayModeHeight(0))
+        else:
+            props.setSize(1280, 720)
+        self.win.requestProperties(props)
+
+    def _minimize(self):
+        props = WindowProperties()
+        props.setMinimized(True)
+        self.win.requestProperties(props)
+
+    def _on_escape(self):
+        if self.state == "COMBAT":
+            if self.chat_active:
+                self._toggle_chat()
+            else:
+                self.pause()
+        elif self.state == "SETTINGS":
+            self.close_settings()
+        elif self.state in ("FARM", "SHOP"):
+            self.goto_hub()
+        elif self.state == "PAUSE":
+            self.resume()
+        # из HUB по Esc не выходим - выход через кнопку «Выход»
+
+    def _set_mouse_captured(self, captured):
+        if hasattr(self.win, "requestProperties"):
+            props = WindowProperties()
+            props.setCursorHidden(captured)
+            props.setMouseMode(WindowProperties.M_absolute)
+            self.win.requestProperties(props)
+        self.mouse_look = captured
+        if captured:
+            self._recenter_mouse()
+
+    # ---------- HUD / чат ----------
+    def _hud_text(self, name, x, z, scale, align, color, card=0.0):
+        tn = self._font(TextNode(name))
+        tn.setAlign(align)
+        tn.setTextColor(*color)
+        if card:
+            tn.setCardColor(0, 0, 0, card)
+            tn.setCardAsMargin(0.3, 0.3, 0.2, 0.2)
+        np = self.hud_root.attachNewNode(tn)
+        np.setScale(scale)
+        np.setPos(x, 0, z)
+        return tn
+
+    def _hud_icon(self, x, z, color, size=0.038):
+        cm = CardMaker("hudicon")
+        cm.setFrame(-1, 1, -1, 1)
+        np = self.hud_root.attachNewNode(cm.generate())
+        np.setTransparency(TransparencyAttrib.MAlpha)
+        np.setColor(*color)
+        np.setScale(size)
+        np.setPos(x, 0, z)
+        return np
+
+    def _setup_hud(self):
+        self.hud_root = self.aspect2d.attachNewNode("hud_root")
+
+        # прицел (центр)
+        self.crosshair = self._font(TextNode("cross"))
+        self.crosshair.setText("+")
+        self.crosshair.setAlign(TextNode.ACenter)
+        self.crosshair.setTextColor(1, 1, 1, 0.9)
+        self.hud_root.attachNewNode(self.crosshair).setScale(0.08)
+
+        # метка фазы (верх-центр) + предупреждение о щелях под ней
+        self.phase_node = self._hud_text("phase", 0, 0.92, 0.05, TextNode.ACenter,
+                                         (0.55, 1.0, 1.0, 1), card=0.4)
+        self.slit_node = self._hud_text("slit", 0, 0.80, 0.058, TextNode.ACenter,
+                                        (1.0, 0.45, 0.55, 1), card=0.45)
+
+        # HP — крупно, низ-слева, с красной иконкой
+        self._hud_icon(-1.24, -0.86, (0.95, 0.25, 0.25, 1), 0.05)
+        self.hp_node = self._hud_text("hp", -1.17, -0.875, 0.072, TextNode.ALeft,
+                                      (1, 1, 1, 1))
+
+        # Очки/смерти — верх-слева
+        self._hud_icon(-1.28, 0.9, (1.0, 0.85, 0.3, 1))
+        self.score_node = self._hud_text("score", -1.21, 0.885, 0.05, TextNode.ALeft,
+                                         (0.96, 0.93, 0.82, 1))
+
+        # Онлайн — верх-справа
+        self.online_node = self._hud_text("online", 1.28, 0.885, 0.045, TextNode.ARight,
+                                          (0.7, 0.9, 1.0, 1))
+
+        # Оружие/боезапас — низ-справа, с иконкой цвета оружия
+        self.weapon_icon = self._hud_icon(1.28, -0.78, (0.45, 1.0, 0.55, 1), 0.045)
+        self.weapon_node = self._hud_text("weapon", 1.21, -0.80, 0.05, TextNode.ARight,
+                                          (1, 1, 1, 1))
+
+        self.chat_node = self._hud_text("chat", -1.3, -0.45, 0.042, TextNode.ALeft,
+                                        (1, 1, 1, 1), card=0.30)
+        # подсказка управления убрана из HUD — настраивается в Настройки -> Управление
+
+        # затемнение экрана при смерти (поверх всего) + текст
+        cm = CardMaker("deathdark")
+        cm.setFrameFullscreenQuad()
+        self.death_overlay = self.render2d.attachNewNode(cm.generate())
+        self.death_overlay.setTransparency(TransparencyAttrib.MAlpha)
+        self.death_overlay.setColor(0, 0, 0, 0)
+        self.death_overlay.setBin("fixed", 50)
+        self.death_overlay.setDepthTest(False)
+        self.death_overlay.setDepthWrite(False)
+        self.death_overlay.hide()
+        self.death_node = self._font(TextNode("death"))
+        self.death_node.setAlign(TextNode.ACenter)
+        self.death_node.setTextColor(1.0, 0.3, 0.4, 1)
+        dnp = self.death_overlay.attachNewNode(self.death_node)
+        dnp.setScale(0.10)
+        dnp.setBin("fixed", 51)
+        self._death_alpha = 0.0
+
+        # тёмно-фиолетовый ночной фильтр всего экрана (фаза BLACK KING)
+        self._bk_night_alpha = 0.0
+        cm_bk = CardMaker("bk_night")
+        cm_bk.setFrameFullscreenQuad()
+        self._bk_night_overlay = self.render2d.attachNewNode(cm_bk.generate())
+        self._bk_night_overlay.setTransparency(TransparencyAttrib.MAlpha)
+        self._bk_night_overlay.setColor(0.05, 0.0, 0.12, 0)
+        self._bk_night_overlay.setBin("fixed", 20)   # под оверлеями смерти/вспышки
+        self._bk_night_overlay.setDepthTest(False)
+        self._bk_night_overlay.setDepthWrite(False)
+        self._bk_night_overlay.hide()
+
+        # зеленоватый вигнет по краям при замедлении газом папани
+        self._vign_alpha = 0.0
+        vt = self._make_vignette_texture((0.35, 0.95, 0.4))
+        cm2 = CardMaker("vign")
+        cm2.setFrameFullscreenQuad()
+        self.vignette = self.render2d.attachNewNode(cm2.generate())
+        self.vignette.setTexture(vt)
+        self.vignette.setTransparency(TransparencyAttrib.MAlpha)
+        self.vignette.setColor(1, 1, 1, 0)
+        self.vignette.setBin("fixed", 40)
+        self.vignette.setDepthTest(False)
+        self.vignette.setDepthWrite(False)
+        self.vignette.hide()
+
+        entry_kw = dict(
+            text="", scale=0.05, command=self._send_chat,
+            width=30, focusInCommand=lambda: None, parent=self.hud_root,
+            pos=(-0.9, 0, -0.45), initialText="", numLines=1,
+            frameColor=(0, 0, 0, 0.6), text_fg=(1, 1, 1, 1),
+        )
+        chat_font = self.fonts.get("chat") or self.default_font
+        if chat_font:
+            entry_kw["text_font"] = chat_font
+        self.entry = DirectEntry(**entry_kw)
+        self.entry.hide()
+
+    def _toggle_chat(self):
+        if self.state != "COMBAT":
+            return
+        self.chat_active = not self.chat_active
+        if self.chat_active:
+            self._set_mouse_captured(False)
+            self.entry.show()
+            self.entry.enterText("")
+            self.entry["focus"] = 1
+        else:
+            self.entry.hide()
+            self.entry["focus"] = 0
+            self._set_mouse_captured(True)
+
+    def _send_chat(self, text):
+        text = (text or "").strip()
+        if text:
+            self.net.send({"t": "chat", "msg": text})
+        self.entry.enterText("")
+        if self.chat_active:
+            self._toggle_chat()
+
+    def _add_chat_line(self, line):
+        self.chat_lines.append(line)
+        self.chat_lines = self.chat_lines[-8:]
+        self.chat_node.setText("\n".join(self.chat_lines))
+
+    # ---------- действия ----------
+    def _can_fire(self):
+        return self.state == "COMBAT" and not self.chat_active and not self.is_dead and self.net
+
+    def _on_fire_down(self):
+        if not self._can_fire():
+            return
+        if self.weapon == "hive":
+            self._emit_projectile()           # улей - одиночный залп по клику
+            return
+        self.firing = True                     # сироп/майонез - струя при зажатии
+        self._fire_accum = C.SPRAY_COOLDOWN    # первая капля сразу
+        self._start_spray_sound()
+
+    def _on_fire_up(self):
+        self.firing = False
+        self._stop_spray_sound()
+
+    def _emit_projectile(self):
+        if not self._can_fire():
+            return
+        import random
+        rad_h = math.radians(self.heading)
+        rad_p = math.radians(self.pitch)
+        fx = -math.sin(rad_h) * math.cos(rad_p)
+        fy = math.cos(rad_h) * math.cos(rad_p)
+        fz = math.sin(rad_p)
+        if self.weapon in ("syrup", "mayo"):   # разброс капель = вид струи/спрея
+            s = C.PROJECTILE_SPREAD
+            fx += random.uniform(-s, s)
+            fy += random.uniform(-s, s)
+            fz += random.uniform(-s, s)
+        origin = [self.pos.x, self.pos.y, self.pos.z + 1.8]
+        self.net.send({"t": "shoot", "pos": origin, "dir": [fx, fy, fz],
+                       "weapon": self.weapon})
+        # всплеск жидкости у «дула» (только струи)
+        if self.weapon in ("syrup", "mayo"):
+            muzzle = [self.pos.x + fx * 1.2, self.pos.y + fy * 1.2, self.pos.z + 1.8 + fz]
+            col = (0.97, 0.97, 0.95, 1) if self.weapon == "mayo" else (0.45, 1.0, 0.55, 1)
+            self.particles.burst(muzzle, count=2, color=col, speed=2.5,
+                                 size=0.14, life=0.35, grav=-6.0, spread=0.6, up=0.4)
+
+    # --- общие звуковые помощники ---
+    def _play_oneshot(self, path, volume=1.0, rate=1.0):
+        snd = load_sound(self.loader, path, loop=False)
+        if snd:
+            snd.setVolume(volume)
+            snd.setPlayRate(rate)   # питч/скорость (для рандомного питча)
+            snd.play()
+
+    def _vol_for_dist(self, dist, max_dist=55.0, min_vol=0.04):
+        """Громкость окружения по расстоянию: ближе -> громче."""
+        return max(min_vol, min(1.0, 1.0 - dist / max_dist))
+
+    def _vol_at(self, x, y, **kw):
+        return self._vol_for_dist(math.hypot(x - self.pos.x, y - self.pos.y), **kw)
+
+    def _play_music(self, path):
+        if self._music_path == path and self._music:
+            return
+        new = load_music(self.loader, path, loop=True)
+        if new is None:
+            return  # нет файла трека - не глушим текущую музыку
+        if self._music:
+            self._music.stop()
+        self._music = new
+        self._music_path = path
+        self._music.setVolume(0.5)
+        self._music.play()
+
+    def _update_slit_music(self):
+        """Во время события щелей играет своя музыка: первые 20с — обычная тревога,
+        последние SLIT_FINAL_PHASE секунд — финальная. После события — вернуть фон.
+        BLACK KING имеет приоритет и не даёт переключить свою тему."""
+        if self.black_king and self.bk_boss_info:
+            # фаза BLACK KING: не переключать музыку сцен ЩЕЛИ поверх темы BLACK KING
+            self._slit_music_on = self.slit_time > 0.0
+            return
+        active = self.slit_time > 0.0
+        if active:
+            if self.slit_time <= C.SLIT_FINAL_PHASE:
+                self._play_music(AC.MUSIC_SLIT_FINAL)
+            else:
+                self._play_music(AC.MUSIC_SLIT)
+        elif self._slit_music_on:
+            # событие завершилось — вернуть музыку фазы/босса
+            self._play_music(AC.MUSIC_BOSS if self.boss_info else AC.MUSIC_PHASE1)
+        self._slit_music_on = active
+
+    def _stop_music(self):
+        if self._music:
+            self._music.stop()
+        self._music = None
+        self._music_path = None
+
+    def _set_loop(self, attr, path, want):
+        """Включить/выключить зацикленный ambient-звук (шаги червя/тараканов)."""
+        cur = getattr(self, attr)
+        if want and cur is None:
+            s = load_sound(self.loader, path, loop=True)
+            if s:
+                s.play()
+                setattr(self, attr, s)
+        elif not want and cur is not None:
+            cur.stop()
+            setattr(self, attr, None)
+
+    def _stop_step_loops(self):
+        self._set_loop("_worm_step_snd", AC.SFX_WORM_STEP, False)
+        self._set_loop("_roach_step_snd", AC.SFX_COCKROACH_STEP, False)
+        self._set_loop("_roach_laugh_snd", AC.SFX_COCKROACH_LAUGH, False)
+
+    # --- звук струи: START один раз, затем зацикленный LOOP ---
+    def _spray_paths(self):
+        if self.weapon == "mayo":
+            return AC.SFX_SHOOT_MAYONEZ_START, AC.SFX_SHOOT_MAYONEZ_LOOP
+        return AC.SFX_SHOOT_SYRUP_START, AC.SFX_SHOOT_SYRUP_LOOP
+
+    def _start_spray_sound(self):
+        self._stop_spray_sound()
+        start_path, loop_path = self._spray_paths()
+        self._spray_loop_snd = load_sound(self.loader, loop_path, loop=True)
+        start_snd = load_sound(self.loader, start_path, loop=False)
+        self._spray_start_snd = start_snd
+        if start_snd:
+            start_snd.play()
+            delay = start_snd.length() or 0.0
+            if delay > 0.01 and self._spray_loop_snd:
+                # включить луп ровно после окончания стартового звука
+                self._spray_loop_task = self.taskMgr.doMethodLater(
+                    delay, self._begin_spray_loop, "spray_loop")
+            elif self._spray_loop_snd:
+                self._spray_loop_snd.play()
+        elif self._spray_loop_snd:
+            self._spray_loop_snd.play()
+
+    def _begin_spray_loop(self, task):
+        if self.firing and self._spray_loop_snd:
+            self._spray_loop_snd.play()
+        self._spray_loop_task = None
+        return task.done
+
+    def _stop_spray_sound(self):
+        if self._spray_loop_task is not None:
+            self.taskMgr.remove(self._spray_loop_task)
+            self._spray_loop_task = None
+        if self._spray_start_snd:
+            self._spray_start_snd.stop()
+            self._spray_start_snd = None
+        if self._spray_loop_snd:
+            self._spray_loop_snd.stop()
+            self._spray_loop_snd = None
+
+    def _set_weapon(self, weapon):
+        if self.state != "COMBAT":
+            return
+        # пчёлы (улей) — не постоянное оружие: нужен активный запас LIT ENERGY
+        if weapon == "hive" and self.bee_time <= 0:
+            if self.lit_energy > 0 and self.net:
+                self.net.send({"t": "use_lit"})   # потратить LIT ENERGY -> открыть пчёл
+                self.bee_time = C.BEE_WINDOW       # оптимистично (снапшот уточнит), чтоб не сбросило
+                self._add_chat_line("[LIT ENERGY] потрачено - пчёлы активны!")
+            else:
+                self._add_chat_line("[ПЧЁЛЫ] нужна LIT ENERGY (выбей её с тараканов)")
+                return
+        self.weapon = weapon
+        names = {"syrup": "Распылитель сиропа", "mayo": "Майонезная пушка",
+                 "hive": "Улей-пчёлы (LIT ENERGY)"}
+        self._add_chat_line(f"[ОРУЖИЕ] {names.get(weapon, weapon)}")
+        # струя завязана на тип оружия - поправим звук/режим при смене
+        if self.firing:
+            if weapon == "hive":
+                self.firing = False
+                self._stop_spray_sound()
+            else:
+                self._start_spray_sound()   # сменить луп на нужную жидкость
+
+    def _gas(self):
+        if self.state != "COMBAT" or self.chat_active:
+            return
+        import time as _t
+        self.gas_until = _t.time() + C.GAS_DURATION
+
+    def _ultimate(self):
+        if self.state != "COMBAT" or self.chat_active or self.is_dead or not self.net:
+            return
+        self.net.send({"t": "ult"})
+
+    def _place_cup(self):
+        if self.state != "COMBAT" or self.chat_active or self.is_dead or not self.net:
+            return
+        if self.cups <= 0:
+            self._add_chat_line("[СТАКАН] нет стаканов (выбей босса)")
+            return
+        self.net.send({"t": "place_cup"})
+
+    def _toggle_camera(self):
+        if self.state != "COMBAT":
+            return
+        self.camera_mode = "first" if self.camera_mode == "third" else "third"
+        label = "от первого лица" if self.camera_mode == "first" else "от третьего лица"
+        self._add_chat_line(f"[КАМЕРА] {label} (C - переключить)")
+
+    def _emote(self, emote):
+        if self.state != "COMBAT" or self.chat_active or not self.net:
+            return
+        self.net.send({"t": "emote", "emote": emote, "pet": "worm"})
+
+    # ---------- мышь ----------
+    def _has_pointer(self):
+        # offscreen-буфер не поддерживает указатель/свойства окна
+        return hasattr(self.win, "getProperties") and self.win.getProperties().getForeground()
+
+    def _recenter_mouse(self):
+        if self._has_pointer():
+            self.win.movePointer(0, self.win.getXSize() // 2, self.win.getYSize() // 2)
+
+    def _mouse_look(self):
+        if not self.mouse_look or not self._has_pointer():
+            return
+        md = self.win.getPointer(0)
+        cx, cy = self.win.getXSize() // 2, self.win.getYSize() // 2
+        if self.win.movePointer(0, cx, cy):
+            dx = md.getX() - cx
+            dy = md.getY() - cy
+            self.heading -= dx * MOUSE_SENS
+            self.pitch = max(-60, min(80, self.pitch - dy * MOUSE_SENS))
+
+    # ---------- главный цикл ----------
+    def update(self, task):
+        dt = globalClock.getDt()
+        # пока есть подключение, мир продолжает жить — даже в паузе/настройках
+        # (мультиплеер не замораживается; пауза лишь размывает фон и снимает управление)
+        live = self.world_built and self.net is not None
+        if not live:
+            self._update_menu_background(dt)   # живой фон меню (без подключения)
+            return Task.cont
+
+        if self.net.error:
+            self._add_chat_line(f"[СЕТЬ] {self.net.error}")
+            self.net.error = None
+
+        controllable = (self.state == "COMBAT") and not self._bk_cutscene
+        if controllable:
+            self._mouse_look()
+            self._update_firing(dt)
+        self._update_audio(dt)
+        self.particles.update(dt)
+        if controllable:
+            self._move(dt)
+        self._update_bk_cutscene(dt)   # кат-сцена управляет камерой сама
+        if not self._bk_cutscene:
+            self._apply_camera(dt)
+        # сироп льётся из угловых стаканов во время фазы BLACK KING
+        if self.black_king and not self._bk_cutscene:
+            self._bk_syrup_timer -= dt
+            if self._bk_syrup_timer <= 0:
+                self._bk_syrup_timer = 0.12
+                import random as _sr
+                for cx, cy in CUP_SPOTS:
+                    for _ in range(3):
+                        ang = _sr.uniform(0, 6.28)
+                        spd = _sr.uniform(2.0, 5.0)
+                        self.particles.burst(
+                            [cx, cy, 1.2], count=1,
+                            color=(0.35, 1.0, 0.15, 1), speed=spd, size=0.22,
+                            life=0.9, grav=-8.0, spread=1.0, up=0.6)
+        self._process_network(dt)      # снапшоты приходят и применяются всегда
+        self._update_remotes(dt)
+        if controllable:
+            self._send_state(dt)
+        self._update_hud()
+        self._update_overlays(dt)
+        return Task.cont
+
+    def _update_audio(self, dt):
+        import time as _t
+        import random
+        self._hurt_cd = max(0.0, self._hurt_cd - dt)
+        self._boss_hit_cd = max(0.0, self._boss_hit_cd - dt)
+        slit_active = self.slit_time > 0.0
+        # шаги червя - пока движется по земле (в паузе/меню — нет)
+        moving = (self.state == "COMBAT" and not self.is_dead and not self.chat_active
+                  and self.on_ground and any(self.keys[k] for k in ("forward","backward","left","right")))
+        self._set_loop("_worm_step_snd", AC.SFX_WORM_STEP, moving)
+        # шаги тараканов - пока есть живые (но во время щели они стоят и ржут)
+        self._set_loop("_roach_step_snd", AC.SFX_COCKROACH_STEP,
+                       self.alive_ants > 0 and not slit_active)
+        if self._roach_step_snd is not None and self.ant_nodes:
+            nd = min(math.hypot(n.getX() - self.pos.x, n.getY() - self.pos.y)
+                     for n in self.ant_nodes.values())
+            self._roach_step_snd.setVolume(self._vol_for_dist(nd, max_dist=35.0))
+        # ржач тараканов: следующий звук смеха ПОСЛЕ того, как доиграл предыдущий
+        if slit_active and self.alive_ants > 0:
+            if self._roach_laugh_snd is None:
+                self._roach_laugh_snd = load_sound(self.loader, AC.SFX_COCKROACH_LAUGH)
+            s = self._roach_laugh_snd
+            if s is not None:
+                vol = 1.0
+                if self.ant_nodes:
+                    nd = min(math.hypot(n.getX() - self.pos.x, n.getY() - self.pos.y)
+                             for n in self.ant_nodes.values())
+                    vol = self._vol_for_dist(nd, max_dist=35.0)
+                s.setVolume(vol)
+                if s.status() != AudioSound.PLAYING:
+                    s.play()
+        elif self._roach_laugh_snd is not None:
+            self._roach_laugh_snd.stop()
+        # случайные реплики Папани (громкость по дистанции до босса)
+        if self.boss_info:
+            now = _t.time()
+            if now >= self._boss_voice_at:
+                voices = [v for v in AC.SFX_BOSS_VOICES]
+                if voices:
+                    bx, by = self.boss_info["pos"][0], self.boss_info["pos"][1]
+                    self._play_oneshot(random.choice(voices), volume=self._vol_at(bx, by))
+                self._boss_voice_at = now + random.uniform(4.0, 9.0)
+        else:
+            self._boss_voice_at = 0.0
+        # звук попадания по BLACK KING
+        self._bk_hit_cd = max(0.0, self._bk_hit_cd - dt)
+        if self.bk_boss_info:
+            cur_hp = self.bk_boss_info.get("hp", C.BLACK_KING_HP)
+            if cur_hp < self._prev_bk_hp - 0.5 and self._bk_hit_cd <= 0:
+                bkp = self.bk_boss_info["pos"]
+                self._play_oneshot(AC.SFX_BLACK_KING_HIT, volume=self._vol_at(bkp[0], bkp[1]))
+                self._bk_hit_cd = 0.2
+            self._prev_bk_hp = cur_hp
+        else:
+            self._prev_bk_hp = C.BLACK_KING_HP
+
+    def _update_firing(self, dt):
+        # пока ЛКМ зажата - выпускаем капли струи с частотой SPRAY_COOLDOWN
+        if self.is_dead or self.chat_active:
+            if self.firing:
+                self._on_fire_up()
+            return
+        if not self.firing or self.weapon not in ("syrup", "mayo"):
+            return
+        self._fire_accum += dt
+        while self._fire_accum >= C.SPRAY_COOLDOWN:
+            self._fire_accum -= C.SPRAY_COOLDOWN
+            self._emit_projectile()
+
+    def _move(self, dt):
+        if self.chat_active or self.is_dead:
+            move = Vec2(0, 0)
+        else:
+            rad = math.radians(self.heading)
+            fwd = Vec2(-math.sin(rad), math.cos(rad))
+            right = Vec2(math.cos(rad), math.sin(rad))
+            move = Vec2(0, 0)
+            if self.keys["forward"]:
+                move += fwd
+            if self.keys["backward"]:
+                move -= fwd
+            if self.keys["right"]:
+                move += right
+            if self.keys["left"]:
+                move -= right
+            if move.lengthSquared() > 0:
+                move.normalize()
+
+        import time as _t
+        speed = C.PLAYER_SPEED * (C.GAS_MULT if _t.time() < self.gas_until else 1.0)
+        if self.player_slow > 0:        # газ босса замедляет
+            speed *= C.BOSS_GAS_SLOW_FACTOR
+        self.pos.x += move.x * speed * dt
+        self.pos.y += move.y * speed * dt
+
+        # отброс от взрыва босса (горизонтальный импульс, плавно затухает — несёт далеко)
+        if self.knockback.lengthSquared() > 0.001:
+            self.pos.x += self.knockback.x * dt
+            self.pos.y += self.knockback.y * dt
+            self.knockback *= max(0.0, 1.0 - 3.5 * dt)
+        else:
+            self.knockback.set(0, 0, 0)
+
+        # опора под ногами: пол (0) либо верх платформы 2-го уровня
+        ground_z = support_z(self.pos.x, self.pos.y, self.pos.z)
+
+        # прыжок и гравитация (джамп-пад имеет приоритет над обычным прыжком)
+        if (self.on_ground and ground_z <= 0.01 and not self.chat_active
+                and on_jump_pad(self.pos.x, self.pos.y)):
+            self.vz = C.JUMP_PAD_BOOST          # подбрасывает на верхний уровень
+            self.on_ground = False
+        elif self.keys["jump"] and self.on_ground and not self.chat_active:
+            self.vz = C.PLAYER_JUMP
+            self.on_ground = False
+        self.vz += C.GRAVITY * dt
+        self.pos.z += self.vz * dt
+        if self.vz <= 0 and self.pos.z <= ground_z:
+            self.pos.z = ground_z               # приземление на пол/платформу
+            self.vz = 0
+            self.on_ground = True
+        else:
+            self.on_ground = False
+
+        lim = C.WORLD_SIZE - 1
+        self.pos.x = max(-lim, min(lim, self.pos.x))
+        self.pos.y = max(-lim, min(lim, self.pos.y))
+
+        # коллизии со стенами (выталкивание наружу); на верхнем кольце (z>стен) не толкает
+        self.pos.x, self.pos.y = resolve_collision(
+            self.pos.x, self.pos.y, self._building_rects, radius=0.6, z=self.pos.z)
+
+    def _apply_camera(self, dt):
+        rad_h = math.radians(self.heading)
+
+        # анимировать локального червя (свои анимации видны и в 1-м, и в 3-м лице)
+        first = (self.camera_mode == "first")
+        self.local_worm.set_first_person(first)
+        self.local_worm.root.setPos(self.pos.x, self.pos.y, self.pos.z)
+        self.local_worm.root.setH(self.heading)
+        moving = (not self.is_dead and not self.chat_active
+                  and any(self.keys[k] for k in ("forward","backward","left","right")))
+        emote = (getattr(self, "_my_snapshot", None) or {}).get("emote")
+        self.local_worm.update(dt, moving=moving, on_ground=self.on_ground,
+                               vz=self.vz, emote=emote, dead=self.is_dead)
+
+        # тряска камеры (взрывы/победа над щелью) — затухает
+        sx = sy = sz = 0.0
+        if self._shake_amp > 0.001:
+            import random
+            a = self._shake_amp
+            sx = random.uniform(-a, a)
+            sy = random.uniform(-a, a)
+            sz = random.uniform(-a, a)
+            self._shake_amp = max(0.0, self._shake_amp - 2.2 * dt)   # дольше трясёт
+
+        if first:
+            self.camera.setPos(self.pos.x + sx, self.pos.y + sy, self.pos.z + 1.9 + sz)
+            self.camera.setHpr(self.heading, self.pitch, 0)
+            return
+
+        # вид от третьего лица - орбита позади и сверху червя
+        focus_z = self.pos.z + 2.2
+        elev = min(math.radians(75), math.radians(self.pitch + 16))  # наклон сверху
+        dist = 11.0
+        fx, fy = -math.sin(rad_h), math.cos(rad_h)   # «вперёд»
+        horiz = dist * math.cos(elev)
+        camx = self.pos.x - fx * horiz
+        camy = self.pos.y - fy * horiz
+        camz = max(1.2, focus_z + dist * math.sin(elev))
+        self.camera.setPos(camx + sx, camy + sy, camz + sz)
+        self.camera.lookAt(self.pos.x, self.pos.y, focus_z)
+
+    def _send_state(self, dt):
+        self._state_accum += dt
+        if self._state_accum >= 1.0 / 20:  # 20 апдейтов/сек
+            self._state_accum = 0.0
+            self.net.send({
+                "t": "state",
+                "pos": [self.pos.x, self.pos.y, self.pos.z],
+                "h": self.heading, "p": self.pitch,
+            })
+
+    def _process_network(self, dt):
+        for msg in self.net.poll():
+            t = msg.get("t")
+            if t == "welcome":
+                self.my_id = msg["id"]
+                self._add_chat_line(f"[СЕРВЕР] Добро пожаловать в Роблокс 2! Твой ID: {self.my_id}")
+            elif t == "snapshot":
+                self._latest_snapshot = msg
+                self._apply_snapshot(msg)
+            elif t == "chat":
+                self._add_chat_line(f"{msg.get('name','?')}: {msg.get('msg','')}")
+            elif t == "event":
+                self._handle_event(msg)
+
+    def _handle_event(self, msg):
+        kind = msg.get("kind")
+        if kind == "splash":
+            self._add_chat_line(f"{msg.get('by')} облил {msg.get('victim')} секретной жидкостью!")
+        elif kind == "ant_killed":
+            import random
+            pos = msg.get("pos")
+            vol = 1.0
+            if pos:
+                self.particles.burst([pos[0], pos[1], 0.4], count=10,
+                                     color=(0.55, 1.0, 0.1, 1), speed=5.0,
+                                     size=0.2, life=0.6, grav=-12.0, spread=1.0, up=1.0)
+                vol = self._vol_at(pos[0], pos[1])     # тише, если далеко
+            self._play_oneshot(AC.SFX_COCKROACH_DEATH, volume=vol,
+                               rate=random.uniform(0.8, 1.3))   # рандомный питч
+        elif kind == "pickup":
+            drop = msg.get("drop", "ресурс")
+            names = {"honey": "мёд", "syrup": "сироп", "mayo": "майонез",
+                     "lit_energy": "LIT ENERGY", "health": "аптечка"}
+            if msg.get("by") == self.player_name:
+                if drop == "lit_energy":
+                    self._add_chat_line("[LIT ENERGY] подобран! [3] - активировать пчёл")
+                elif drop == "cup":
+                    self._add_chat_line("[СТАКАН] подобран! неси в угол карты, [R] - поставить")
+                elif drop == "health":
+                    self._add_chat_line(f"[АПТЕЧКА] +{C.HEALTH_DROP_HEAL} HP")
+                else:
+                    self._add_chat_line(f"[ДРОП] подобрал: {names.get(drop, drop)}")
+                self._play_oneshot(AC.SFX_PICKUP)
+                col = DROP_COLORS.get(drop, (1, 1, 1, 1))
+                self.particles.burst([self.pos.x, self.pos.y, 1.0], count=8,
+                                     color=col, speed=3.5, size=0.16, life=0.5,
+                                     grav=-6.0, spread=0.8, up=1.0)
+        elif kind == "lit_used":
+            if msg.get("by") == self.player_name:
+                self._add_chat_line(f"[LIT ENERGY] пчёлы доступны {int(msg.get('time', 12))}с!")
+                self._play_oneshot(AC.SFX_LIT_ENERGY)   # спец-звук активации (один раз)
+        elif kind == "cup_placed":
+            self._add_chat_line(f"[РИТУАЛ] стакан поставлен ({msg.get('count', '?')}/4)")
+            self._play_oneshot(AC.SFX_PICKUP, rate=0.7)
+        elif kind == "black_king_spawn":
+            import random as _r
+            self._add_chat_line("=== ВСЕ 4 СТАКАНА НА МЕСТЕ! ПРОБУЖДАЕТСЯ BLACK KING... ===")
+            self._play_oneshot(AC.SFX_BLACK_KING_SPAWN)
+            self._play_music(AC.MUSIC_BLACK_KING)
+            # телепортировать локального игрока на спавн
+            self.pos.set(_r.uniform(-5, 5), _r.uniform(-20, -14), 0.0)
+            self.vz = 0.0
+            self.on_ground = True
+            # запустить кат-сцену
+            self._bk_cutscene = True
+            self._bk_cutscene_t = 0.0
+            self.firing = False
+            self._stop_spray_sound()
+            # 4 стакана для кат-сцены (появятся во время вращения)
+            for n in self._bk_cup_nodes:
+                n.removeNode()
+            self._bk_cup_nodes = []
+            for _ in range(4):
+                cn = make_cup()
+                cn.reparentTo(self.render)
+                cn.hide()
+                self._bk_cup_nodes.append(cn)
+        elif kind == "bk_defeated":
+            self._add_chat_line(f"=== BLACK KING ПОВЕРЖЕН! {msg.get('by')} стал легендой! +50 всем! ===")
+            self._play_oneshot(AC.SFX_BLACK_KING_DEATH)
+            self._flash_screen((1.0, 0.9, 0.0, 1), duration=2.0, hold=0.5)
+            self._shake(1.2)
+            self._play_music(AC.MUSIC_PHASE1)
+        elif kind == "bk_voice":
+            import random as _r
+            voices = [v for v in AC.SFX_BLACK_KING_VOICES]
+            if voices:
+                bkp = self.bk_boss_info["pos"] if self.bk_boss_info else None
+                vol = self._vol_at(bkp[0], bkp[1]) if bkp else 1.0
+                self._play_oneshot(_r.choice(voices), volume=vol)
+        elif kind == "bk_phase2":
+            self._add_chat_line("=== BLACK KING ВЗБЕСИЛСЯ! ФАЗА 2: ЛАЗЕРЫ + ОЖИВШИЕ СТАКАНЫ! ===")
+            self._flash_screen((0.6, 0.0, 1.0, 1), duration=1.4, hold=0.3)
+            self._shake(0.8)
+            self._play_oneshot(AC.SFX_BLACK_KING_SPAWN, volume=0.7)
+        elif kind == "bk_shoot":
+            pos = msg.get("pos", [0, 0, 2.5])
+            self.particles.burst(pos, count=6, color=(0.7, 0.0, 1.0, 1), speed=5.0,
+                                 size=0.2, life=0.35, grav=-1.0, spread=0.6, up=0.4)
+        elif kind == "bk_shot_hit":
+            pos = msg.get("pos", [0, 0, 1])
+            self.particles.burst(pos, count=12, color=(0.8, 0.0, 1.0, 1), speed=7.0,
+                                 size=0.25, life=0.5, grav=-8.0, spread=1.0, up=1.0)
+            self._play_oneshot(AC.SFX_BLACK_KING_HIT, volume=self._vol_at(pos[0], pos[1]))
+        elif kind == "bk_cup_shoot":
+            pos = msg.get("pos", [0, 0, 1.5])
+            self.particles.burst(pos, count=4, color=(0.3, 1.0, 0.2, 1), speed=3.0,
+                                 size=0.18, life=0.3, grav=-1.0, spread=0.5, up=0.3)
+        elif kind == "bk_cup_hit":
+            pos = msg.get("pos", [0, 0, 1])
+            self.particles.burst(pos, count=8, color=(0.25, 1.0, 0.3, 1), speed=5.0,
+                                 size=0.22, life=0.5, grav=-6.0, spread=1.0, up=0.8)
+        elif kind == "bk_minion_spawn":
+            pass  # тихо — визуально появляются из под босса
+        elif kind == "bk_minion_killed":
+            import random as _r
+            pos = msg.get("pos", [0, 0])
+            self.particles.burst([pos[0], pos[1], 0.5], count=10,
+                                 color=(0.55, 0.0, 1.0, 1), speed=5.0, size=0.2,
+                                 life=0.5, grav=-8.0, spread=1.0, up=1.0)
+            self._play_oneshot(AC.SFX_COCKROACH_DEATH, volume=self._vol_at(pos[0], pos[1]),
+                               rate=1.5)
+        elif kind == "wipe":
+            self._add_chat_line("[ВАЙП] все погибли - фаза сброшена, начинаем заново!")
+        elif kind == "boss_gas":
+            pos = msg.get("pos", [0, 0])
+            # облако едкого зелёного дыма ГАЗЗЗ
+            for _ in range(3):
+                self.particles.burst([pos[0], pos[1], 1.2], count=10,
+                                     color=(0.55, 0.95, 0.35, 1), speed=5.0, size=0.45,
+                                     life=1.4, grav=-1.0, spread=1.0, up=0.5)
+        elif kind == "death":
+            self._add_chat_line(f"{msg.get('victim')} погиб от тараканов!")
+        elif kind == "wave":
+            self._add_chat_line(f"[ВОЛНА {msg.get('wave')}] тараканов: {msg.get('count')}")
+        elif kind == "boss_spawn":
+            self._add_chat_line("[БОСС] Папаня вышел! Поливай его сиропом - копи Уважение!")
+            self._play_oneshot(AC.SFX_BOSS_SPAWN)
+            self._play_music(AC.MUSIC_BOSS)
+        elif kind == "boss_defeated":
+            self._add_chat_line(f"[БОСС] {msg.get('by')} уважил Папаню! +ресурсы всем")
+            self._play_oneshot(AC.SFX_BOSS_DEATH)
+            self._play_music(AC.MUSIC_PHASE1)
+        elif kind == "boss_throw":
+            pos = msg.get("pos", [0, 0, 2.5])
+            self._play_oneshot(AC.SFX_BOSS_THROW, volume=self._vol_at(pos[0], pos[1]))
+            self.particles.burst(pos, count=10, color=(1.0, 0.5, 0.1, 1), speed=4.0,
+                                 size=0.2, life=0.4, grav=-3.0, spread=0.9, up=0.6)
+        elif kind == "boss_explode":
+            pos = msg.get("pos", [0, 0, 0])
+            self._play_oneshot(AC.SFX_EXPLOSION, volume=self._vol_at(pos[0], pos[1]))
+            # большой взрыв
+            self.particles.burst([pos[0], pos[1], pos[2] + 0.3], count=26,
+                                 color=(1.0, 0.45, 0.1, 1), speed=9.0, size=0.32,
+                                 life=0.8, grav=-10.0, spread=1.0, up=1.0)
+            self.particles.burst([pos[0], pos[1], pos[2] + 0.3], count=12,
+                                 color=(1.0, 0.85, 0.3, 1), speed=5.0, size=0.22,
+                                 life=0.6, grav=-6.0, spread=1.0, up=0.8)
+            self._apply_blast_knockback(pos)
+        elif kind == "ultimate":
+            self._add_chat_line(f"[УЛЬТ] {msg.get('by')}: ПАПАНЯ В ТАКОЕ НЕ ИГРАЛ - тараканы замерли!")
+        elif kind == "neon_wave":
+            self._add_chat_line(f"[ТРЕВОГА] синие неоновые муравьи! стрелков: {msg.get('count')}")
+        elif kind == "neon_shoot":
+            pos = msg.get("pos", [0, 0, 1.1])
+            self.particles.burst([pos[0], pos[1], pos[2]], count=6,
+                                 color=(0.4, 0.82, 1.0, 1), speed=3.0, size=0.16,
+                                 life=0.35, grav=-2.0, spread=0.7, up=0.4)
+            self._play_oneshot(AC.SFX_SKIBIDI_SHOOT, volume=self._vol_at(pos[0], pos[1]))
+        elif kind == "neon_ant_killed":
+            import random
+            pos = msg.get("pos")
+            vol = 1.0
+            if pos:
+                self.particles.burst([pos[0], pos[1], 0.6], count=16,
+                                     color=(0.3, 0.75, 1.0, 1), speed=6.0, size=0.22,
+                                     life=0.7, grav=-10.0, spread=1.0, up=1.0)
+                self.particles.burst([pos[0], pos[1], 0.6], count=8,
+                                     color=(0.7, 0.97, 1.0, 1), speed=3.5, size=0.16,
+                                     life=0.5, grav=-5.0, spread=1.0, up=0.8)
+                vol = self._vol_at(pos[0], pos[1])
+            self._play_oneshot(AC.SFX_COCKROACH_DEATH, volume=vol,
+                               rate=random.uniform(1.2, 1.6))   # выше питч = «электронная» смерть
+        elif kind == "slit_spawn":
+            t = int(msg.get("time", C.SLIT_TIME_LIMIT))
+            self._add_chat_line(
+                f"[ЩЕЛЬ] Появились щели ({msg.get('count', '?')})! Найди и залей "
+                f"МАЙОНЕЗОМ (2) - наполни шкалу. {t}с, иначе все умрут!")
+            self._play_oneshot(AC.SFX_SLIT_SPAWN)
+        elif kind == "slit_calmed":
+            pos = msg.get("pos", [0, 0, 1])
+            self.particles.burst([pos[0], pos[1], pos[2]], count=14,
+                                 color=(1.0, 0.95, 0.7, 1), speed=4.0, size=0.2,
+                                 life=0.6, grav=-6.0, spread=1.0, up=0.8)
+            self._add_chat_line("[ЩЕЛЬ] одна щель удовлетворена")
+            # звук успокаивания (calm) идёт В ПРОЦЕССЕ заполнения (см. _apply_snapshot)
+        elif kind == "slit_defeated":
+            # оглушающий и ОСЛЕПЛЯЮЩИЙ взрыв победы над щелью
+            self._add_chat_line("[ЩЕЛЬ] Все щели повержены! Победа")
+            self._play_oneshot(AC.SFX_SLIT_DEFEATED, volume=1.0)
+            self._flash_screen((1, 1, 1, 1), duration=2.0, hold=0.5)
+            self._shake(0.9)
+            p = [self.pos.x, self.pos.y, self.pos.z + 1.0]
+            self.particles.burst(p, count=60, color=(1.0, 0.95, 0.6, 1), speed=18.0,
+                                 size=0.45, life=1.3, grav=-6.0, spread=1.0, up=1.0)
+            self.particles.burst(p, count=40, color=(1.0, 1.0, 1.0, 1), speed=11.0,
+                                 size=0.34, life=1.0, grav=-4.0, spread=1.0, up=0.95)
+            self.particles.burst(p, count=22, color=(1.0, 0.8, 0.3, 1), speed=6.0,
+                                 size=0.5, life=1.5, grav=-2.0, spread=1.0, up=0.7)
+        elif kind == "slit_failed":
+            self._add_chat_line("[ЩЕЛЬ] Не успели... щель поглотила всех!")
+        elif kind == "skibidi_hit":
+            pos = msg.get("pos", [0, 0, 0])
+            self.particles.burst([pos[0], pos[1], pos[2] + 0.2], count=14,
+                                 color=(0.32, 0.72, 1.0, 1), speed=5.0, size=0.22,
+                                 life=0.5, grav=-8.0, spread=1.0, up=0.7)
+            self.particles.burst([pos[0], pos[1], pos[2] + 0.2], count=6,
+                                 color=(0.7, 0.95, 1.0, 1), speed=2.5, size=0.16,
+                                 life=0.4, grav=-4.0, spread=1.0, up=0.5)
+            self._play_oneshot(AC.SFX_SKIBIDI_HIT, volume=self._vol_at(pos[0], pos[1]))
+
+    def _apply_snapshot(self, msg):
+        # игроки
+        seen = set()
+        for pid_str, snap in msg.get("players", {}).items():
+            pid = int(pid_str)
+            if pid == self.my_id:
+                self._my_snapshot = snap
+                self.is_dead = bool(snap.get("dead"))
+                hp = snap.get("hp", self._prev_hp)
+                if (hp < self._prev_hp - 0.5 and not self.is_dead
+                        and self._hurt_cd <= 0):
+                    self._play_oneshot(AC.SFX_PLAYER_HURT)
+                    self._hurt_cd = 0.5
+                self._prev_hp = hp
+                self.lit_energy = snap.get("lit", 0)
+                self.bee_time = snap.get("bees", 0.0)
+                self.player_slow = snap.get("slow", 0.0)
+                self.cups = snap.get("cups", 0)
+                # пчёлы кончились — вернуть струю сиропа
+                if self.weapon == "hive" and self.bee_time <= 0:
+                    self.weapon = "syrup"
+                continue
+            seen.add(pid)
+            if pid not in self.remote:
+                self.remote[pid] = RemoteAvatar(self.render, pid, snap["name"],
+                                                self.fonts.get("world"))
+            self.remote[pid].update(snap, globalClock.getDt())
+        for pid in list(self.remote):
+            if pid not in seen:
+                self.remote[pid].destroy()
+                del self.remote[pid]
+
+        # метаданные волн/босса
+        self.wave = msg.get("wave", self.wave)
+        self.alive_ants = msg.get("alive", 0)
+        self.neon_alive = msg.get("neon", 0)
+        self.boss_info = msg.get("boss")
+        self.black_king = bool(msg.get("black_king"))
+        self.bk_boss_info = msg.get("bk_boss")
+        # рендер BLACK KING
+        self._update_bk_rendering()
+        # копии BLACK KING
+        seen_bkm = set()
+        for m in msg.get("bk_minions", []):
+            mid, mx, my, mz = m
+            seen_bkm.add(mid)
+            node = self.bk_minion_nodes.get(mid)
+            if node is None:
+                node = self._make_bk_minion_node()
+                node.reparentTo(self.render)
+                self.bk_minion_nodes[mid] = node
+            node.setPos(mx, my, mz)
+        for mid in list(self.bk_minion_nodes):
+            if mid not in seen_bkm:
+                self.bk_minion_nodes[mid].removeNode()
+                del self.bk_minion_nodes[mid]
+
+        # фиолетовые лазеры BLACK KING (фаза 2)
+        seen_bks = set()
+        for bks in msg.get("bk_shots", []):
+            bksid, sx, sy, sz = bks
+            seen_bks.add(bksid)
+            node = self.bk_shot_nodes.get(bksid)
+            if node is None:
+                node = make_sphere(0.35, 8, 8, (0.6, 0.0, 1.0, 1))
+                node.setLightOff(1)
+                node.reparentTo(self.render)
+                self.bk_shot_nodes[bksid] = node
+            node.setPos(sx, sy, sz)
+            self.particles.burst([sx, sy, sz], count=1, color=(0.7, 0.0, 1.0, 1),
+                                 speed=1.5, size=0.22, life=0.3, grav=-0.5, spread=0.4, up=0.1)
+        for bksid in list(self.bk_shot_nodes):
+            if bksid not in seen_bks:
+                self.bk_shot_nodes[bksid].removeNode()
+                del self.bk_shot_nodes[bksid]
+
+        # ожившие стаканы (фаза 2): ползут по серверной позиции, зелёное свечение
+        seen_lc = set()
+        for lc in msg.get("bk_living_cups", []):
+            cid, cx, cy = lc
+            seen_lc.add(cid)
+            node = self.bk_lc_nodes.get(cid)
+            if node is None:
+                node = make_cup()
+                node.setLightOff(1)
+                node.setColorScale(0.3, 1.0, 0.4, 1)
+                node.reparentTo(self.render)
+                self.bk_lc_nodes[cid] = node
+            node.setPos(cx, cy, 0.0)
+            node.setH((node.getH() + 2.0) % 360)   # медленное вращение вокруг оси
+            # зелёный пар
+            self.particles.burst([cx, cy, 1.0], count=1, color=(0.35, 1.0, 0.2, 1),
+                                 speed=1.2, size=0.28, life=0.9, grav=-0.3, spread=0.6, up=0.5)
+        for cid in list(self.bk_lc_nodes):
+            if cid not in seen_lc:
+                self.bk_lc_nodes[cid].removeNode()
+                del self.bk_lc_nodes[cid]
+
+        # зелёные замедляющие снаряды ожившего стакана
+        seen_cs = set()
+        for cs in msg.get("bk_cup_shots", []):
+            csid, sx, sy, sz = cs
+            seen_cs.add(csid)
+            node = self.bk_cup_shot_nodes.get(csid)
+            if node is None:
+                node = make_sphere(0.30, 8, 8, (0.25, 1.0, 0.35, 1))
+                node.setLightOff(1)
+                node.reparentTo(self.render)
+                self.bk_cup_shot_nodes[csid] = node
+            node.setPos(sx, sy, sz)
+            self.particles.burst([sx, sy, sz], count=1, color=(0.3, 1.0, 0.2, 1),
+                                 speed=1.2, size=0.18, life=0.3, grav=-0.2, spread=0.3, up=0.1)
+        for csid in list(self.bk_cup_shot_nodes):
+            if csid not in seen_cs:
+                self.bk_cup_shot_nodes[csid].removeNode()
+                del self.bk_cup_shot_nodes[csid]
+
+        # стаканы на 4 угловых пьедесталах (показываем поставленные)
+        spots = msg.get("cup_spots", self.cup_spots)
+        if spots != self.cup_spots or not self.cup_spot_nodes:
+            self._update_cup_spots(spots)
+        self.cup_spots = spots
+
+        # тараканы (волнами появляются и исчезают)
+        seen_ants = set()
+        for ant in msg.get("ants", []):
+            aid, ax, ay, az = ant
+            seen_ants.add(aid)
+            node = self.ant_nodes.get(aid)
+            if node is None:
+                node = make_cockroach(scale=1.1)
+                node.reparentTo(self.render)
+                self.ant_nodes[aid] = node
+            node.setPos(ax, ay, az)
+            px, py = self._ant_prev.get(aid, (ax, ay))
+            dx, dy = ax - px, ay - py
+            if dx * dx + dy * dy > 1e-5:
+                node.setH(math.degrees(math.atan2(-dx, dy)))
+            self._ant_prev[aid] = (ax, ay)
+        for aid in list(self.ant_nodes):
+            if aid not in seen_ants:
+                self.ant_nodes[aid].removeNode()
+                del self.ant_nodes[aid]
+                self._ant_prev.pop(aid, None)
+
+        # синие неоновые муравьи-стрелки (светятся, появляются после 3-й волны)
+        seen_neon = set()
+        for na in msg.get("neon_ants", []):
+            nid, nx, ny, nh = na
+            seen_neon.add(nid)
+            node = self.neon_ant_nodes.get(nid)
+            if node is None:
+                node = make_neon_ant(scale=1.15)
+                node.reparentTo(self.render)
+                self.neon_ant_nodes[nid] = node
+            node.setPos(nx, ny, 0.0)
+            node.setH(nh)
+        for nid in list(self.neon_ant_nodes):
+            if nid not in seen_neon:
+                self.neon_ant_nodes[nid].removeNode()
+                del self.neon_ant_nodes[nid]
+
+        # «шкибиди-зелье» - синие неоновые снаряды муравьёв (+ светящийся трейл)
+        seen_ashots = set()
+        for ash in msg.get("ant_shots", []):
+            asid, sx, sy, sz = ash
+            seen_ashots.add(asid)
+            node = self.ant_shot_nodes.get(asid)
+            if node is None:
+                node = make_box(0.4, 0.4, 0.4, (0.30, 0.72, 1.0, 1))
+                node.setLightOff(1)
+                node.reparentTo(self.render)
+                self.ant_shot_nodes[asid] = node
+            node.setPos(sx, sy, sz)
+            node.setH((node.getH() + 16) % 360)
+            self.particles.burst([sx, sy, sz], count=1, color=(0.35, 0.78, 1.0, 1),
+                                 speed=1.4, size=0.2, life=0.45, grav=-0.5, spread=0.5, up=0.25)
+        for asid in list(self.ant_shot_nodes):
+            if asid not in seen_ashots:
+                self.ant_shot_nodes[asid].removeNode()
+                del self.ant_shot_nodes[asid]
+
+        # снаряды (сироп - зелёный, майонез - белый)
+        seen_shots = set()
+        for shot in msg.get("shots", []):
+            sid, sx, sy, sz, kind = shot
+            seen_shots.add(sid)
+            node = self.shot_nodes.get(sid)
+            if node is None:
+                color = (0.97, 0.97, 0.95, 1) if kind == 1 else (0.45, 1.0, 0.55, 1)
+                size = 0.22 + (sid % 3) * 0.04   # лёгкий разнобой = капли жидкости
+                node = make_box(size, size, size, color)
+                node.reparentTo(self.render)
+                self.shot_nodes[sid] = node
+            node.setPos(sx, sy, sz)
+        for sid in list(self.shot_nodes):
+            if sid not in seen_shots:
+                self.shot_nodes[sid].removeNode()
+                del self.shot_nodes[sid]
+
+        # пчёлы
+        seen_bees = set()
+        for bee in msg.get("bees", []):
+            bid, bx, by, bz = bee
+            seen_bees.add(bid)
+            node = self.bee_nodes.get(bid)
+            if node is None:
+                node = make_bee()
+                node.reparentTo(self.render)
+                self.bee_nodes[bid] = node
+            node.setPos(bx, by, bz)
+        for bid in list(self.bee_nodes):
+            if bid not in seen_bees:
+                self.bee_nodes[bid].removeNode()
+                del self.bee_nodes[bid]
+
+        # дроп с тараканов (светящиеся кубики-ресурсы)
+        import time as _t
+        bob = math.sin(_t.time() * 4) * 0.15
+        seen_drops = set()
+        for drop in msg.get("drops", []):
+            did, dx, dy, kind = drop
+            seen_drops.add(did)
+            node = self.drop_nodes.get(did)
+            if node is None:
+                node = self._make_drop_node(kind)
+                node.reparentTo(self.render)
+                self.drop_nodes[did] = node
+            node.setPos(dx, dy, 0.6 + bob)
+            node.setH((node.getH() + 2) % 360)
+        for did in list(self.drop_nodes):
+            if did not in seen_drops:
+                self.drop_nodes[did].removeNode()
+                del self.drop_nodes[did]
+
+        # взрывные снаряды босса (+ огненный трейл)
+        seen_bshots = set()
+        for bs in msg.get("bshots", []):
+            bsid, sx, sy, sz = bs
+            seen_bshots.add(bsid)
+            node = self.boss_shot_nodes.get(bsid)
+            if node is None:
+                node = make_box(0.6, 0.6, 0.6, (1.0, 0.35, 0.1, 1))
+                node.setLightOff(1)
+                node.reparentTo(self.render)
+                self.boss_shot_nodes[bsid] = node
+            node.setPos(sx, sy, sz)
+            self.particles.burst([sx, sy, sz], count=1, color=(1.0, 0.5, 0.1, 1),
+                                 speed=1.2, size=0.18, life=0.4, grav=-1.0, spread=0.4, up=0.2)
+        for bsid in list(self.boss_shot_nodes):
+            if bsid not in seen_bshots:
+                self.boss_shot_nodes[bsid].removeNode()
+                del self.boss_shot_nodes[bsid]
+
+        # ЩЕЛИ — настенный враг (шкала наполняется майонезом; визуальная полоса)
+        self.slit_time = msg.get("slit_time", 0.0)
+        seen_slits = set()
+        any_filling = False
+        fill_pos = None
+        for sl in msg.get("slits", []):
+            sid, sx, sy, sz, sh, frac, calmed = sl
+            seen_slits.add(sid)
+            node = self.slit_nodes.get(sid)
+            if node is None:
+                tex = load_texture(self.loader, AC.SLIT_TEXTURE)
+                node = make_slit(scale=1.6, texture=tex)
+                node.reparentTo(self.render)
+                self.slit_nodes[sid] = node
+                bar = WorldBar(self.render, label="ЩЕЛЬ", width=3.0, height=0.4,
+                               fill_color=(1.0, 0.85, 0.35, 1),
+                               font=self.fonts.get("world"))
+                self.slit_bars[sid] = bar
+            node.setPos(sx, sy, sz)
+            node.setH(sh)
+            # звук успокаивания повторяется, пока шкала растёт (в процессе)
+            prev = self._slit_prev_frac.get(sid, 0.0)
+            if not calmed and frac > prev + 1e-4:
+                any_filling = True
+                fill_pos = (sx, sy)
+            self._slit_prev_frac[sid] = frac
+            # шкалу выносим ПЕРЕД стеной (вдоль нормали щели = её «вперёд») и выше
+            hr = math.radians(sh)
+            fx, fy = -math.sin(hr), math.cos(hr)
+            bar = self.slit_bars.get(sid)
+            if bar:
+                bar.set_pos(sx + fx * 1.4, sy + fy * 1.4, sz + 2.2)
+                bar.set_fraction(frac)
+            if calmed:
+                node.setColorScale(0.45, 1.0, 0.55, 1)
+                if bar:
+                    bar.set_label("ЩЕЛЬ повержена")
+                    bar.set_fill_color((0.4, 1.0, 0.5, 1))
+            else:
+                import time as _t
+                pulse = 0.75 + 0.25 * math.sin(_t.time() * 6)
+                node.setColorScale(1.0, pulse, pulse, 1)
+                if bar:
+                    bar.set_label(f"ЩЕЛЬ - майонез! {int(frac * 100)}%")
+        for sid in list(self.slit_nodes):
+            if sid not in seen_slits:
+                self.slit_nodes[sid].removeNode()
+                del self.slit_nodes[sid]
+                self._slit_prev_frac.pop(sid, None)
+                bar = self.slit_bars.pop(sid, None)
+                if bar:
+                    bar.destroy()
+        # звук удовлетворения щели: при попадании, но только если предыдущий уже доиграл
+        if any_filling:
+            if self._slit_calm_snd is None:
+                self._slit_calm_snd = load_sound(self.loader, AC.SFX_SLIT_CALM)
+            s = self._slit_calm_snd
+            if s is not None and s.status() != AudioSound.PLAYING:
+                s.setVolume(self._vol_at(fill_pos[0], fill_pos[1]) if fill_pos else 1.0)
+                s.play()
+
+        # музыка события щелей (первые 20с / последние 10с — разная)
+        self._update_slit_music()
+
+        # босс «Папаня» с плавающей визуальной шкалой Уважения над головой
+        if self.boss_info:
+            if self.boss_node is None:
+                self.boss_node = self._make_boss_node()
+                self.boss_node.reparentTo(self.render)
+                # шкалу крепим к сцене (не к боссу ×3) - отдельный размер
+                self.boss_bar = WorldBar(self.render, label="ПАПАНЯ", width=3.4,
+                                         height=0.44, fill_color=(1.0, 0.85, 0.2, 1),
+                                         font=self.fonts.get("world"))
+            bx, by, bz = self.boss_info["pos"]
+            self.boss_node.setPos(bx, by, bz)
+            self.boss_bar.set_pos(bx, by, bz + 5.5)
+            # разворот к ближайшему игроку (heading считает сервер) + доворот модели
+            h = self.boss_info.get("h", 0.0)
+            if self._boss_is_model:
+                h += AC.BOSS_MODEL_YAW
+            self.boss_node.setH(h)
+            r, mx = self.boss_info["respect"], self.boss_info["max"]
+            self.boss_bar.set_fraction(r / mx if mx else 0.0)
+            ph = self.boss_info.get("phase", 1)
+            self.boss_bar.set_label(f"ПАПАНЯ ({ph} фаза) - {r}/{mx}")
+            # во 2-й фазе из босса постоянно валит едкий зелёный ГАЗ
+            if ph == 2:
+                self.particles.burst([bx, by, bz + 1.0], count=2,
+                                     color=(0.5, 0.92, 0.32, 1), speed=2.2,
+                                     size=0.5, life=1.6, grav=-0.6, spread=1.0, up=0.7)
+            if r > self._prev_boss_respect and self._boss_hit_cd <= 0:
+                self._play_oneshot(AC.SFX_BOSS_HIT, volume=self._vol_at(bx, by))
+                self._boss_hit_cd = 0.25
+            self._prev_boss_respect = r
+        elif self.boss_node is not None:
+            self.boss_node.removeNode()
+            self.boss_node = None
+            if self.boss_bar is not None:
+                self.boss_bar.destroy()
+                self.boss_bar = None
+            self._prev_boss_respect = 0
+
+    def _update_cup_spots(self, spots):
+        """Показать поставленные белые стаканы на 4 угловых пьедесталах."""
+        if not self.cup_spot_nodes:
+            for (sx, sy) in CUP_SPOTS:
+                node = make_cup(scale=1.3)
+                node.setPos(sx, sy, 0.9)
+                node.reparentTo(self.render)
+                node.hide()
+                self.cup_spot_nodes.append(node)
+        for i, node in enumerate(self.cup_spot_nodes):
+            if i < len(spots) and spots[i]:
+                node.show()
+            else:
+                node.hide()
+
+    def _make_drop_node(self, kind):
+        """Узел дропа: 3D-модель по типу (honey/syrup/mayo/lit_energy); нет файла — кубик."""
+        if kind == "cup":
+            return make_cup(scale=1.1)      # процедурный белый стакан
+        path = AC.DROP_MODELS.get(kind)
+        if path:
+            model = load_model(self.loader, path)
+            if model and not model.isEmpty():
+                holder = NodePath(f"{kind}_drop")
+                inst = model.copyTo(holder)        # копия (кэш не мутируем)
+                inst.clearTransform()
+                lo, hi = inst.getTightBounds()
+                h = max(0.01, hi.z - lo.z)
+                s = 1.2 / h                         # нормализуем по высоте ~1.2 ед.
+                inst.setScale(s)
+                inst.setPos(-(lo.x + hi.x) * 0.5 * s, -(lo.y + hi.y) * 0.5 * s, -lo.z * s)
+                if kind == "lit_energy":
+                    holder.setLightOff(1)           # LIT ENERGY светится
+                return holder
+        node = make_box(0.4, 0.4, 0.4, DROP_COLORS.get(kind, (1, 1, 1, 1)))
+        node.setLightOff(1)        # «светится»
+        return node
+
+    def _make_boss_node(self, target_height=6.0):
+        """Узел босса: модель из papich (если валидна) либо процедурный таракан-босс."""
+        model = load_model(self.loader, AC.BOSS_MODEL)
+        if model and not model.isEmpty():
+            holder = self.render.attachNewNode("boss_model")
+            # РАБОЧАЯ КОПИЯ: кэшированную модель НЕ мутируем (иначе при 2-м появлении
+            # getTightBounds вернёт уже отмасштабированные границы -> босс «усыхает»).
+            inst = model.copyTo(holder)
+            inst.clearTransform()                  # мерим геометрию без чужого масштаба
+            lo, hi = inst.getTightBounds()
+            h = max(0.01, hi.z - lo.z)
+            s = target_height / h
+            inst.setScale(s)
+            # поставить на землю и отцентрировать по XY
+            inst.setPos(-(lo.x + hi.x) * 0.5 * s, -(lo.y + hi.y) * 0.5 * s, -lo.z * s)
+            holder.setTwoSided(True)                          # видны «вывернутые» грани (лицо)
+            holder.setTransparency(TransparencyAttrib.MNone, 1)  # принудительно непрозрачно
+            self._boss_is_model = True
+            return holder
+        self._boss_is_model = False
+        return make_boss(scale=3.0)   # fallback: процедурная модель
+
+    def _update_bk_rendering(self):
+        """Рендер BLACK KING из снапшота: модель + HP-шкала."""
+        if self.bk_boss_info:
+            if self.bk_boss_node is None:
+                self.bk_boss_node = self._make_bk_boss_node()
+                self.bk_boss_node.reparentTo(self.render)
+                self.bk_boss_bar = WorldBar(self.render, label="BLACK KING", width=3.8,
+                                             height=0.44, fill_color=(0.6, 0.0, 1.0, 1),
+                                             font=self.fonts.get("world"))
+            bx, by, bz = self.bk_boss_info["pos"]
+            self.bk_boss_node.setPos(bx, by, bz)
+            h = self.bk_boss_info.get("h", 0.0)
+            if self._bk_is_model:
+                h += AC.BLACK_KING_MODEL_YAW
+            self.bk_boss_node.setH(h)
+            hp, mx = self.bk_boss_info["hp"], self.bk_boss_info["max_hp"]
+            self.bk_boss_bar.set_pos(bx, by, bz + 6.0)
+            self.bk_boss_bar.set_fraction(hp / mx if mx else 0.0)
+            self.bk_boss_bar.set_label(f"BLACK KING - {hp}/{mx}")
+            # фиолетовые частицы свечения
+            self.particles.burst([bx, by, bz + 1.5], count=2,
+                                 color=(0.55, 0.0, 1.0, 1), speed=2.5,
+                                 size=0.5, life=1.4, grav=-0.4, spread=1.0, up=0.8)
+        elif self.bk_boss_node is not None:
+            self.bk_boss_node.removeNode()
+            self.bk_boss_node = None
+            if self.bk_boss_bar is not None:
+                self.bk_boss_bar.destroy()
+                self.bk_boss_bar = None
+            self._prev_bk_hp = C.BLACK_KING_HP
+
+    def _make_bk_boss_node(self, target_height=6.0):
+        """Узел BLACK KING: модель black_king.glb или тёмный процедурный таракан."""
+        model = load_model(self.loader, AC.BLACK_KING_MODEL)
+        if model and not model.isEmpty():
+            holder = self.render.attachNewNode("bk_boss_model")
+            inst = model.copyTo(holder)
+            inst.clearTransform()
+            lo, hi = inst.getTightBounds()
+            h = max(0.01, hi.z - lo.z)
+            s = target_height / h
+            inst.setScale(s)
+            inst.setPos(-(lo.x + hi.x) * 0.5 * s, -(lo.y + hi.y) * 0.5 * s, -lo.z * s)
+            holder.setTwoSided(True)
+            holder.setTransparency(TransparencyAttrib.MNone, 1)
+            self._bk_is_model = True
+            return holder
+        self._bk_is_model = False
+        node = make_cockroach(body_color=(0.08, 0.0, 0.18, 1), scale=3.2)
+        node.setLightOff(1)
+        node.setColorScale(0.5, 0.0, 0.9, 1)
+        return node
+
+    def _make_bk_minion_node(self):
+        """Маленькая копия BLACK KING: уменьшенная модель или процедурный мини-таракан."""
+        model = load_model(self.loader, AC.BLACK_KING_MODEL)
+        if model and not model.isEmpty():
+            holder = NodePath("bk_minion")
+            inst = model.copyTo(holder)
+            inst.clearTransform()
+            lo, hi = inst.getTightBounds()
+            h = max(0.01, hi.z - lo.z)
+            s = 2.0 / h
+            inst.setScale(s)
+            inst.setPos(-(lo.x + hi.x) * 0.5 * s, -(lo.y + hi.y) * 0.5 * s, -lo.z * s)
+            holder.setTwoSided(True)
+            holder.setTransparency(TransparencyAttrib.MNone, 1)
+            return holder
+        return make_bk_minion()
+
+    def _update_remotes(self, dt):
+        pass  # обновляются в _apply_snapshot
+
+    def _update_bk_cutscene(self, dt):
+        """Кат-сцена призыва BLACK KING (12 секунд): тёмно-фиолетовый фильтр,
+        кинематографическая камера, вращающиеся стаканы со струями сиропа."""
+        import math as _m
+        import random as _r
+
+        # когда кат-сцена не идёт — только плавно анимировать ночной фильтр
+        if not self._bk_cutscene:
+            target_a = 0.38 if self.black_king else 0.0
+            self._bk_night_alpha += (target_a - self._bk_night_alpha) * min(1.0, 3.0 * dt)
+            if self._bk_night_alpha > 0.005:
+                self._bk_night_overlay.setColor(0.05, 0.0, 0.12, self._bk_night_alpha)
+                self._bk_night_overlay.show()
+            else:
+                self._bk_night_overlay.hide()
+            return
+
+        self._bk_cutscene_t += dt
+        t = self._bk_cutscene_t
+
+        # позиция BLACK KING (из снапшота или северный спавн по умолчанию)
+        bx = self.bk_boss_info["pos"][0] if self.bk_boss_info else 0.0
+        by = self.bk_boss_info["pos"][1] if self.bk_boss_info else 38.0
+        bz = self.bk_boss_info["pos"][2] if self.bk_boss_info else 0.0
+
+        # --- ФАЗА 0 (0..1.5с): затемнение до полной тьмы ---
+        if t < 1.5:
+            a = min(1.0, t / 0.7)
+            self._bk_night_overlay.show()
+            self._bk_night_overlay.setColor(0.03, 0.0, 0.08, a * 0.98)
+            self._bk_night_alpha = a * 0.98
+            self.local_worm.root.stash()   # прятать червя во время кат-сцены
+            if hasattr(self, "hud_root"):
+                self.hud_root.hide()       # HUD скрыт во время кат-сцены
+            return
+
+        # кат-сцена: фиолетовая ночь на ~0.40 альфа
+        self._bk_night_alpha = 0.40
+        self._bk_night_overlay.setColor(0.05, 0.0, 0.12, 0.40)
+        self._bk_night_overlay.show()
+
+        # --- ФАЗА 1 (1.5..5с): боковая камера, медленный облёт ---
+        if t < 5.0:
+            frac = (t - 1.5) / 3.5
+            angle = _m.radians(55 + frac * 30)
+            r = 20.0
+            cx = bx + _m.cos(angle) * r
+            cy = by + _m.sin(angle) * r * 0.7
+            self.camera.setPos(cx, cy, bz + 5.5)
+            self.camera.lookAt(bx, by, bz + 2.5)
+            self.camera.setR(0)
+            return
+
+        # --- ФАЗА 2 (5..8с): переход в изометрию ---
+        if t < 8.0:
+            frac = (t - 5.0) / 3.0
+            frac3 = frac ** 2   # ускоряющаяся анимация
+            angle = _m.radians(85 + frac3 * 10)
+            r = 18.0 + frac3 * 8.0
+            cz_off = 5.5 + frac3 * 16.0
+            cx = bx + _m.cos(angle) * r
+            cy = by + _m.sin(angle) * r * 0.5
+            self.camera.setPos(cx, cy, bz + cz_off)
+            self.camera.lookAt(bx, by, bz + 1.5)
+            self.camera.setR(0)
+            return
+
+        # --- ФАЗА 3 (8..12с): низкий угол с юга, стаканы вращаются с ускорением ---
+        if t < 12.0:
+            # камера строго с юга, низко — boss arena открыта, карта не мешает
+            self.camera.setPos(bx, by - 22, bz + 3.5)
+            self.camera.lookAt(bx, by + 3, bz + 2.5)
+            self.camera.setR(0)
+            # вращение стаканов (ускоряющееся)
+            frac = (t - 8.0) / 4.0
+            cup_r = 5.0
+            rot_speed = 60 + frac * 300   # градусов/сек, быстро ускоряется
+            total_rot = (t - 8.0) * (60 + frac * 150)  # интеграл угловой скорости
+            for i, cup_node in enumerate(self._bk_cup_nodes):
+                ang = _m.radians(i * 90 + total_rot)
+                cx2 = bx + _m.cos(ang) * cup_r
+                cy2 = by + _m.sin(ang) * cup_r
+                cup_node.setPos(cx2, cy2, 0.5)
+                cup_node.setH(_m.degrees(ang) + 90)
+                cup_node.show()
+                # струи зелёного сиропа от стакана к боссу (каждые ~0.12с)
+                if int(t / 0.12) != int((t - dt) / 0.12):
+                    dx = bx - cx2; dy = by - cy2
+                    dn = _m.hypot(dx, dy) or 1.0
+                    # несколько частиц вдоль луча от стакана к боссу
+                    for step_frac in (0.2, 0.5, 0.8):
+                        px = cx2 + dx * step_frac
+                        py = cy2 + dy * step_frac
+                        self.particles.burst([px, py, 0.6], count=2,
+                                             color=(0.35, 1.0, 0.15, 1), speed=2.0,
+                                             size=0.18, life=0.5, grav=-3.0,
+                                             spread=0.3, up=0.3)
+            # нарастающий белый блик перед концом
+            if t >= 11.0:
+                flash_t = (t - 11.0) / 1.0
+                self._bk_night_overlay.setColor(
+                    0.05 + flash_t * 0.95, flash_t * 0.95, 0.12 + flash_t * 0.88,
+                    0.40 + flash_t * 0.60)
+            return
+
+        # --- КОНЕЦ КАТ-СЦЕНЫ (>= 12с) ---
+        for n in self._bk_cup_nodes:
+            n.removeNode()
+        self._bk_cup_nodes = []
+        self._bk_cutscene = False
+        self._bk_night_alpha = 0.40
+        self._bk_night_overlay.setColor(0.05, 0.0, 0.12, 0.40)
+        self.local_worm.root.unstash()
+        if hasattr(self, "hud_root"):
+            self.hud_root.show()   # вернуть HUD
+        self._flash_screen((1.0, 1.0, 1.0, 1.0), duration=1.6, hold=0.25)
+        self._shake(0.6)
+
+    def _update_hud(self):
+        import time as _t
+        snap = getattr(self, "_my_snapshot", None)
+        hp = snap["hp"] if snap else C.PLAYER_MAX_HP
+        score = snap["score"] if snap else 0
+        deaths = snap["deaths"] if snap else 0
+        online = len(self.remote) + (1 if self.my_id else 0)
+        wnames = {"syrup": "СИРОП", "mayo": "МАЙОНЕЗ", "hive": "ПЧЁЛЫ"}
+        wcolors = {"syrup": (0.45, 1.0, 0.55, 1), "mayo": (0.97, 0.97, 0.92, 1),
+                   "hive": (1.0, 0.85, 0.2, 1)}
+
+        # HP (низ-слева) + цвет от количества
+        self.hp_node.setText(f"{int(hp)}")
+        frac = max(0.0, min(1.0, hp / C.PLAYER_MAX_HP))
+        self.hp_node.setTextColor(1.0, 0.3 + 0.6 * frac, 0.3 + 0.5 * frac, 1)
+
+        # Очки/смерти (верх-слева)
+        self.score_node.setText(f"Очки: {score}   Смертей: {deaths}")
+        # Онлайн (верх-справа)
+        self.online_node.setText(f"Онлайн: {online}")
+
+        # Оружие/боезапас (низ-справа) + иконка цвета оружия
+        gas = " +ГАЗ" if _t.time() < self.gas_until else ""
+        wline = f"{wnames.get(self.weapon, self.weapon)}{gas}"
+        if self.bee_time > 0:
+            wline += f"  ({self.bee_time:.0f}с)"
+        extra = f"\nLIT ENERGY [3]: {self.lit_energy}"
+        if self.cups > 0:
+            extra += f"   Стаканы [R]: {self.cups}"
+        self.weapon_node.setText(wline + extra)
+        self.weapon_icon.setColor(*wcolors.get(self.weapon, (1, 1, 1, 1)))
+
+        phase = f"ФАЗА 1: ТРАВЛЯ - Волна {self.wave} (тараканов: {self.alive_ants})"
+        if getattr(self, "neon_alive", 0):
+            phase += f" + синих стрелков: {self.neon_alive}"
+        if self.boss_info:
+            r, m = self.boss_info["respect"], self.boss_info["max"]
+            ph = self.boss_info.get("phase", 1)
+            phase += f"  |  ПАПАНЯ (фаза {ph}) - {r}/{m}"
+        if self.black_king:
+            if self.bk_boss_info:
+                hp, mx = self.bk_boss_info["hp"], self.bk_boss_info["max_hp"]
+                bk_ph = self.bk_boss_info.get("phase", 1)
+                bk_label = "ФАЗА 2 - ЛАЗЕРЫ" if bk_ph == 2 else "ФАЗА 1"
+                phase += f"  |  BLACK KING [{bk_label}] - {hp}/{mx}"
+            else:
+                phase += "  |  BLACK KING ПОВЕРЖЕН"
+        self.phase_node.setText(phase)
+
+        # предупреждение о щелях с обратным отсчётом (пусто -> ничего не видно)
+        if getattr(self, "slit_time", 0.0) > 0.0:
+            self.slit_node.setText(f"ЩЕЛЬ! Залейте майонезом (2): {self.slit_time:.0f}с")
+        else:
+            self.slit_node.setText("")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Клиент SWAGA")
+    parser.add_argument("--name",   default="Игрок",   help="имя игрока (переопределяется auth)")
+    parser.add_argument("--host",   default=C.HOST,    help="адрес игрового сервера")
+    parser.add_argument("--port",   type=int, default=C.PORT, help="порт игрового сервера")
+    parser.add_argument("--auth",   default="",        help="адрес auth-сервера (HOST:PORT)")
+    args = parser.parse_args()
+
+    app = Roblox2(args.name, args.host, args.port, auth_server=args.auth)
+    app.run()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+
+# Настройки клиента (личные биндинги, адрес сервера)
+client_settings.json
+
+# База данных авторизации
+swaga_auth.db
+swaga_auth.db-shm
+swaga_auth.db-wal
+*.db.bak
+
+# Логи серверов
+srv.out
+srv.err
+cli.out
+cli.err
+*.log
+
+# Panda3D кэш и временные файлы
+*.bam
+*.boo
+cache/
+.panda3d/
+
+# Ассеты (крупные бинарники — хранить отдельно или в LFS)
+# assets/textures/
+# assets/sounds/
+# papich/
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Установочные артефакты
+*.lnk

@@ -1,0 +1,2 @@
+panda3d>=1.10
+panda3d-gltf>=1.0      # загрузка модели босса (.glb/.gltf) — client/assets.load_model

@@ -1,0 +1,32 @@
+Сюда складывай звуки игры (.wav / .ogg). Имена — из client/asset_config.py.
+Нет файла — игра не падает, просто не играет этот звук.
+
+СТРУИ ЖИДКОСТЕЙ (сначала START один раз, затем LOOP в цикле, пока жмёшь ЛКМ):
+    sfx_shoot_syrup_start.wav      sfx_shoot_syrup_loop.wav
+    sfx_shoot_mayonez_start.wav    sfx_shoot_mayonez_loop.wav
+
+ВХОД В ИГРУ:
+    sfx_join_phase1.wav            <- звук при входе на сервер (старт первой фазы)
+
+ТАРАКАНЫ:
+    sfx_cockroach_death.wav        <- убийство таракана
+    sfx_cockroach_step.wav         <- ходьба тараканов (играет в цикле, пока есть живые)
+
+ЧЕРВЬ-ИГРОК:
+    sfx_worm_step.wav              <- шаги червя (цикл при движении)
+    sfx_player_hurt.wav            <- урон от таракана
+
+БОСС «ПАПАНЯ»:
+    sfx_boss_spawn.wav             <- появление
+    sfx_boss_hit.wav               <- получает урон сиропом
+    sfx_boss_death.wav             <- смерть
+    sfx_boss_voice_1.wav           <- случайные реплики (можно 1..N штук)
+    sfx_boss_voice_2.wav
+    sfx_boss_voice_3.wav
+
+МУЗЫКА:
+    music_phase1.wav               <- фон обычной первой фазы
+    music_boss.wav                 <- фон битвы с Папаней
+    music_hub.wav                  <- главное меню (опционально)
+
+Прочее: sfx_explosion.wav

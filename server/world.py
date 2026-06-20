@@ -756,6 +756,7 @@ class World:
         self.nav = NavGrid()         # граф клеток для умного поиска пути мобами
         self.cup_spots = [False] * len(CUP_SPOTS)   # заняты ли 4 угловых пьедестала
         self.black_king = False      # запущена ли секретная фаза BLACK KING
+        self._pre_bk_wave = 0        # волна которая была ДО призыва BLACK KING
         self.bk_boss = None          # BlackKing boss instance
         self.bk_minions = {}         # mid -> BlackKingMinion
         self._next_bk_minion_id = 1
@@ -876,6 +877,7 @@ class World:
                 self.events.append({"t": "event", "kind": "cup_placed",
                                     "spot": i, "count": sum(self.cup_spots)})
                 if all(self.cup_spots) and not self.black_king:
+                    self._pre_bk_wave = self.wave   # запомнить текущую волну
                     self.black_king = True
                     now2 = time.time()
                     self.bk_boss = BlackKing(now2)
@@ -1428,13 +1430,15 @@ class World:
                 pl.pos = [random.uniform(-3, 3), random.uniform(4, 8), 0.0]
 
     def _check_wipe(self, now):
-        """Если ВСЕ игроки мертвы — сброс фазы до нулевой (заново с 1-й волны),
-        враги/босс/щели очищаются; респаун будет на спавне (см. _respawn_dead)."""
+        """Если ВСЕ игроки мертвы:
+        - обычная фаза: сброс до волны 1.
+        - фаза BLACK KING: завершить BK-фазу, вернуть волну которая была до призыва."""
         if not self.players:
             self._all_dead = False
             return
         all_dead = all(pl.dead for pl in self.players.values())
         if all_dead and not self._all_dead:
+            # очистить обычных врагов всегда
             self.ants.clear()
             self.neon_ants.clear()
             self.ant_shots.clear()
@@ -1444,15 +1448,37 @@ class World:
             self.boss = None
             self.slits = {}
             self.slit_event_active = False
-            self.wave = 0
-            self._wave_pending = True
-            self.next_wave_at = now + C.WAVE_DELAY
-            self.next_slit_at = now + random.uniform(*C.SLIT_INTERVAL)
-            self.bk_minions.clear()     # копии BLACK KING чистим; сам босс остаётся
-            self.bk_shots.clear()       # снаряды BLACK KING чистим при вайпе
-            self.bk_cup_shots.clear()   # снаряды стаканов тоже
-            # bk_living_cups остаются (фаза 2 продолжается)
-            self.events.append({"t": "event", "kind": "wipe"})
+
+            if self.black_king:
+                # погружение: собрать позиции BK и миньонов для анимации
+                bk_pos = ([round(self.bk_boss.pos[0], 2), round(self.bk_boss.pos[1], 2)]
+                           if self.bk_boss else [0.0, 38.0])
+                minion_poss = [[round(m.pos[0], 2), round(m.pos[1], 2), round(m.pos[2], 2)]
+                               for m in self.bk_minions.values()]
+                self.events.append({"t": "event", "kind": "bk_wipe",
+                                    "bk_pos": bk_pos, "minion_positions": minion_poss})
+                # завершить BK-фазу полностью
+                self.bk_boss = None
+                self.bk_minions.clear()
+                self.bk_shots.clear()
+                self.bk_living_cups.clear()
+                self.bk_cup_shots.clear()
+                self.black_king = False
+                self.cup_spots = [False] * len(CUP_SPOTS)
+                # восстановить волну до той что была перед призывом
+                self.wave = max(0, self._pre_bk_wave - 1)
+                self._wave_pending = True
+                self.next_wave_at = now + 4.5   # 3с анимация погружения + буфер
+                self.next_slit_at = now + random.uniform(*C.SLIT_INTERVAL)
+            else:
+                self.bk_minions.clear()
+                self.bk_shots.clear()
+                self.bk_cup_shots.clear()
+                self.wave = 0
+                self._wave_pending = True
+                self.next_wave_at = now + C.WAVE_DELAY
+                self.next_slit_at = now + random.uniform(*C.SLIT_INTERVAL)
+                self.events.append({"t": "event", "kind": "wipe"})
         self._all_dead = all_dead
 
     # --- снапшот ---

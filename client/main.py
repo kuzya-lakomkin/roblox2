@@ -493,6 +493,9 @@ class Roblox2(ShowBase):
         self._bk_death_t = 0.0      # таймер кат-сцены
         self._bk_death_node = None  # узел модели для погружения в пол
         self._bk_death_pos = (0.0, 0.0)  # позиция гибели
+        # анимация погружения при bk_wipe (игроки умерли во время BK)
+        self._bk_wipe_sinking = []  # [(NodePath, x, y, z_start)]
+        self._bk_wipe_t = 0.0
         # фаза 2 BLACK KING
         self.bk_shot_nodes = {}        # bksid -> NodePath (фиолетовые лазеры)
         self.bk_lc_nodes = {}          # cid -> NodePath (ожившие стаканы)
@@ -1757,8 +1760,9 @@ class Roblox2(ShowBase):
                 self.pos.z = gz
                 self.vz = 0.0
                 self.on_ground = True
-        self._update_bk_cutscene(dt)   # кат-сцена появления управляет камерой
-        self._update_bk_death_cutscene(dt)  # кат-сцена смерти
+        self._update_bk_cutscene(dt)       # кат-сцена появления управляет камерой
+        self._update_bk_death_cutscene(dt) # кат-сцена смерти BK (победа)
+        self._update_bk_wipe(dt)           # погружение при вайпе во время BK
         if not self._bk_cutscene and not self._bk_death_cs:
             self._apply_camera(dt)
         # сироп льётся из угловых стаканов во время фазы BLACK KING
@@ -2062,6 +2066,10 @@ class Roblox2(ShowBase):
                                         size=0.4, life=1.0, grav=-3.0, spread=1.5, up=0.8)
             pos = msg.get("pos", [0.0, 0.0])
             self._start_bk_death_cutscene(pos[0], pos[1])
+        elif kind == "bk_wipe":
+            self._add_chat_line("[ВАЙП] все погибли! БЛЭК КИНГ уходит... волна возобновится.")
+            self._start_bk_wipe_sink(msg)
+            self._play_music(AC.MUSIC_PHASE1)
         elif kind == "bk_voice":
             import random as _r
             voices = [v for v in AC.SFX_BLACK_KING_VOICES]
@@ -2102,11 +2110,8 @@ class Roblox2(ShowBase):
             self._play_oneshot(AC.SFX_COCKROACH_DEATH, volume=self._vol_at(pos[0], pos[1]),
                                rate=1.5)
         elif kind == "wipe":
-            if self.black_king:
-                self._add_chat_line("[ВАЙП] все погибли! БЛЭК КИНГ продолжает охоту...")
-            else:
-                self._add_chat_line("[ВАЙП] все погибли - начинаем заново с волны 1!")
-                self._play_music(AC.MUSIC_PHASE1)
+            self._add_chat_line("[ВАЙП] все погибли - начинаем заново с волны 1!")
+            self._play_music(AC.MUSIC_PHASE1)
         elif kind == "boss_gas":
             pos = msg.get("pos", [0, 0])
             # облако едкого зелёного дыма ГАЗЗЗ
@@ -2766,6 +2771,56 @@ class Roblox2(ShowBase):
             # сбросить ночной фильтр немедленно
             self._bk_night_alpha = 0.0
             self._bk_night_overlay.hide()
+
+    def _start_bk_wipe_sink(self, event_msg):
+        """Анимация погружения при bk_wipe: BK и миньоны уходят под землю за 3с."""
+        import random as _r
+        self._bk_wipe_sinking = []
+        self._bk_wipe_t = 0.0
+
+        # взять живой узел BK (если есть) и передать в список погружения
+        if self.bk_boss_node and not self.bk_boss_node.isEmpty():
+            p = self.bk_boss_node.getPos()
+            self._bk_wipe_sinking.append((self.bk_boss_node, p.x, p.y, p.z))
+            self.bk_boss_node = None   # отвязать от нормального обновления
+
+        # взять узлы миньонов
+        for mid, mnode in list(self.bk_minion_nodes.items()):
+            if mnode and not mnode.isEmpty():
+                p = mnode.getPos()
+                self._bk_wipe_sinking.append((mnode, p.x, p.y, p.z))
+        self.bk_minion_nodes.clear()
+
+        # убрать HP-шкалу BK
+        if self.bk_boss_bar is not None:
+            self.bk_boss_bar.destroy()
+            self.bk_boss_bar = None
+
+    def _update_bk_wipe(self, dt):
+        """Обновление анимации погружения при bk_wipe."""
+        if not self._bk_wipe_sinking:
+            return
+        import random as _r
+        SINK_DUR = 3.0
+        self._bk_wipe_t += dt
+        t = self._bk_wipe_t
+        frac = min(1.0, t / SINK_DUR)
+        alive = []
+        for node, x, y, z0 in self._bk_wipe_sinking:
+            if node.isEmpty():
+                continue
+            sink_z = z0 - frac * 8.0
+            node.setPos(x, y, sink_z)
+            node.setH(node.getH() + 45.0 * dt)
+            if int(t * 6) % 2 == 0:
+                self.particles.burst([x, y, max(-0.5, sink_z + 0.5)], count=3,
+                                     color=(0.4, 0.0, 0.7, 1), speed=3.0,
+                                     size=0.35, life=0.9, grav=-2.0, spread=1.2, up=0.4)
+            if t < SINK_DUR:
+                alive.append((node, x, y, z0))
+            else:
+                node.removeNode()
+        self._bk_wipe_sinking = alive
 
     def _update_remotes(self, dt):
         pass  # обновляются в _apply_snapshot

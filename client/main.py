@@ -2901,7 +2901,7 @@ class Roblox2(ShowBase):
         cup_hint = ""
         if self.cups > 0:
             near_free = any(
-                not taken and math.hypot(self.pos.x - cx, self.pos.y - cy) <= C.CUP_SPOT_RADIUS + 1.5
+                not taken and math.hypot(self.pos.x - cx, self.pos.y - cy) <= 4.5
                 for (cx, cy), taken in zip(CUP_SPOTS, self.cup_spots)
             )
             if near_free:

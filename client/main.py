@@ -1022,7 +1022,7 @@ class Roblox2(ShowBase):
                 w.events.clear()
                 return
             elif kind == 'pickup':
-                if msg.get('drop') != 'lit_energy':
+                if ev.get('drop') != 'lit_energy':
                     self._play_oneshot(AC.SFX_PICKUP, volume=1.0)
         w.events.clear()
         step_key = (self._tut_steps[self._tut_step][0]

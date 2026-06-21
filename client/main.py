@@ -1046,7 +1046,7 @@ class Roblox2(ShowBase):
             self._tut_next()
         elif step_key == 'ant' and not w.ants and not self._tut_ant_was_alive:
             self._tut_next()
-        elif step_key == 'pickup_lit' and player_lit > 0:
+        elif step_key == 'pickup_lit' and self.bee_time > 0:
             self._play_oneshot(AC.SFX_JOIN_PHASE1, volume=0.7)
             self._tut_next()
         elif step_key == 'neon' and not w.neon_ants and not self._tut_neon_was_alive:

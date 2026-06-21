@@ -1026,7 +1026,10 @@ class Roblox2(ShowBase):
         if not hasattr(self.win, "requestProperties"):
             return
         props = WindowProperties()
-        props.setFullscreen(fullscreen)
+        props.setFullscreen(False)
+        props.setUndecorated(fullscreen)
+        if fullscreen:
+            props.setOrigin(0, 0)
         props.setSize(w, h)
         self.win.requestProperties(props)
 
@@ -1037,7 +1040,7 @@ class Roblox2(ShowBase):
 
     # ---------- окно / постэффекты ----------
     def _go_native_fullscreen(self):
-        # только для настоящего окна (не offscreen-буфера)
+        # безрамочное окно = OBS-совместимый «полный экран» (не эксклюзивный режим)
         from panda3d.core import GraphicsWindow
         if not isinstance(self.win, GraphicsWindow):
             return
@@ -1047,7 +1050,9 @@ class Roblox2(ShowBase):
             if w <= 0 or h <= 0:
                 return
             props = WindowProperties()
-            props.setFullscreen(True)
+            props.setFullscreen(False)
+            props.setUndecorated(True)
+            props.setOrigin(0, 0)
             props.setSize(w, h)
             self.win.requestProperties(props)
             self._fullscreen = True
@@ -1278,12 +1283,16 @@ class Roblox2(ShowBase):
     def _toggle_fullscreen(self):
         self._fullscreen = not self._fullscreen
         props = WindowProperties()
-        props.setFullscreen(self._fullscreen)
+        props.setFullscreen(False)
         if self._fullscreen:
             di = self.pipe.getDisplayInformation()
-            if di and di.getTotalDisplayModes() > 0:
-                props.setSize(di.getDisplayModeWidth(0), di.getDisplayModeHeight(0))
+            w = di.getDisplayModeWidth(0) if (di and di.getTotalDisplayModes() > 0) else self.pipe.getDisplayWidth()
+            h = di.getDisplayModeHeight(0) if (di and di.getTotalDisplayModes() > 0) else self.pipe.getDisplayHeight()
+            props.setUndecorated(True)
+            props.setOrigin(0, 0)
+            props.setSize(w, h)
         else:
+            props.setUndecorated(False)
             props.setSize(1280, 720)
         self.win.requestProperties(props)
 

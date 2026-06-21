@@ -555,6 +555,7 @@ class Roblox2(ShowBase):
         self.bk_cup_shot_nodes = {}    # csid -> NodePath (зелёные замедляющие)
         self._bk_syrup_timer = 0.0     # таймер частиц сиропа из угловых стаканов
         self.chat_lines = []
+        self._notices = []          # [(node, timer, duration)]
         self._state_accum = 0.0
         self._building_rects = building_rects(pad=0.0)
         self.wave = 0
@@ -1543,6 +1544,51 @@ class Roblox2(ShowBase):
         self.chat_lines = self.chat_lines[-8:]
         self.chat_node.setText("\n".join(self.chat_lines))
 
+    def _show_notice(self, text, color=(1.0, 0.88, 0.45, 1.0), duration=3.5):
+        """Кратковременное уведомление по центру экрана, плавно исчезает."""
+        if not self.world_built:
+            return
+        tn = TextNode("notice")
+        tn.setText(text)
+        tn.setAlign(TextNode.ACenter)
+        fnt = self.fonts.get("hud") or self.default_font
+        if fnt:
+            tn.setFont(fnt)
+        np = self.aspect2d.attachNewNode(tn)
+        np.setScale(0.060)
+        np.setTransparency(TransparencyAttrib.MAlpha)
+        np.setColorScale(*color)
+        np.setBin("fixed", 50)
+        self._notices.append([np, duration, duration])
+        # пересчитать позиции (снизу вверх)
+        self._restack_notices()
+
+    def _restack_notices(self):
+        base_z = -0.28
+        for i, entry in enumerate(self._notices):
+            entry[0].setPos(0, 0, base_z + i * 0.090)
+
+    def _update_notices(self, dt):
+        alive = []
+        for entry in self._notices:
+            np, timer, duration = entry
+            timer -= dt
+            entry[1] = timer
+            fade_start = min(0.6, duration * 0.25)
+            if timer <= 0:
+                np.removeNode()
+            else:
+                if timer < fade_start:
+                    np.setColorScale(np.getColorScale()[0],
+                                     np.getColorScale()[1],
+                                     np.getColorScale()[2],
+                                     timer / fade_start)
+                alive.append(entry)
+        changed = len(alive) != len(self._notices)
+        self._notices = alive
+        if changed:
+            self._restack_notices()
+
     # ---------- действия ----------
     def _can_fire(self):
         return self.state in ("COMBAT", "TUTORIAL") and not self.chat_active and not self.is_dead
@@ -1710,17 +1756,17 @@ class Roblox2(ShowBase):
                 elif self.net:
                     self.net.send({"t": "use_lit"})
                 self.bee_time = C.BEE_WINDOW
-                self._add_chat_line("[LIT ENERGY] потрачено - пчёлы активны!")
+                self._show_notice("LIT ENERGY потрачено  пчёлы активны!", color=(0.4, 0.82, 1.0, 1), duration=2.5)
                 self._play_oneshot(AC.SFX_LIT_ENERGY, volume=0.9)
             else:
-                self._add_chat_line("[ПЧЁЛЫ] нужна LIT ENERGY (выбей её с тараканов)")
+                self._show_notice("Нужна LIT ENERGY  выбей её с тараканов", color=(0.9, 0.6, 0.1, 1), duration=2.5)
                 return
         if weapon != self.weapon:
             self._play_oneshot(AC.SFX_WEAPON_SELECT, volume=0.7)
         self.weapon = weapon
         names = {"syrup": "Распылитель сиропа", "mayo": "Майонезная пушка",
                  "hive": "Улей-пчёлы (LIT ENERGY)"}
-        self._add_chat_line(f"[ОРУЖИЕ] {names.get(weapon, weapon)}")
+        pass  # смена оружия видна в HUD
         # струя завязана на тип оружия - поправим звук/режим при смене
         if self.firing:
             if weapon == "hive":
@@ -1744,7 +1790,7 @@ class Roblox2(ShowBase):
         if self.state != "COMBAT" or self.chat_active or self.is_dead or not self.net:
             return
         if self.cups <= 0:
-            self._add_chat_line("[СТАКАН] нет стаканов (выбей босса)")
+            self._show_notice("Нет стаканов  выбей босса!", color=(0.9, 0.6, 0.1, 1), duration=2.0)
             return
         self.net.send({"t": "place_cup"})
 
@@ -1753,7 +1799,7 @@ class Roblox2(ShowBase):
             return
         self.camera_mode = "first" if self.camera_mode == "third" else "third"
         label = "от первого лица" if self.camera_mode == "first" else "от третьего лица"
-        self._add_chat_line(f"[КАМЕРА] {label} (C - переключить)")
+        pass  # переключение камеры — понятно без надписи
 
     def _emote(self, emote):
         if self.state != "COMBAT" or self.chat_active or not self.net:
@@ -1825,9 +1871,10 @@ class Roblox2(ShowBase):
                 self.pos.z = gz
                 self.vz = 0.0
                 self.on_ground = True
-        self._update_bk_cutscene(dt)       # кат-сцена появления управляет камерой
-        self._update_bk_death_cutscene(dt) # кат-сцена смерти BK (победа)
-        self._update_bk_wipe(dt)           # погружение при вайпе во время BK
+        self._update_bk_cutscene(dt)
+        self._update_bk_death_cutscene(dt)
+        self._update_bk_wipe(dt)
+        self._update_notices(dt)
         if not self._bk_cutscene and not self._bk_death_cs:
             self._apply_camera(dt)
         # сироп льётся из угловых стаканов во время фазы BLACK KING
@@ -2047,7 +2094,8 @@ class Roblox2(ShowBase):
             t = msg.get("t")
             if t == "welcome":
                 self.my_id = msg["id"]
-                self._add_chat_line(f"[СЕРВЕР] Добро пожаловать в Роблокс 2! Твой ID: {self.my_id}")
+                self._show_notice(f"Добро пожаловать! ID: {self.my_id}",
+                                  color=(0.6, 0.9, 0.6, 1), duration=3.0)
             elif t == "snapshot":
                 self._latest_snapshot = msg
                 self._apply_snapshot(msg)
@@ -2073,17 +2121,13 @@ class Roblox2(ShowBase):
                                rate=random.uniform(0.8, 1.3))   # рандомный питч
         elif kind == "pickup":
             drop = msg.get("drop", "ресурс")
-            names = {"honey": "мёд", "syrup": "сироп", "mayo": "майонез",
-                     "lit_energy": "LIT ENERGY", "health": "аптечка"}
             if msg.get("by") == self.player_name:
                 if drop == "lit_energy":
-                    self._add_chat_line("[LIT ENERGY] подобран! [3] - активировать пчёл")
+                    self._show_notice("LIT ENERGY подобран!  [3] - активировать пчёл",
+                                      color=(0.4, 0.82, 1.0, 1))
                 elif drop == "cup":
-                    self._add_chat_line("[СТАКАН] подобран! неси в угол карты, [R] - поставить")
-                elif drop == "health":
-                    self._add_chat_line(f"[АПТЕЧКА] +{C.HEALTH_DROP_HEAL} HP")
-                else:
-                    self._add_chat_line(f"[ДРОП] подобрал: {names.get(drop, drop)}")
+                    self._show_notice("СТАКАН подобран!  неси в угол карты  [R] - поставить",
+                                      color=(1.0, 0.88, 0.45, 1))
                 self._play_oneshot(AC.SFX_PICKUP)
                 col = DROP_COLORS.get(drop, (1, 1, 1, 1))
                 self.particles.burst([self.pos.x, self.pos.y, 1.0], count=8,
@@ -2091,14 +2135,17 @@ class Roblox2(ShowBase):
                                      grav=-6.0, spread=0.8, up=1.0)
         elif kind == "lit_used":
             if msg.get("by") == self.player_name:
-                self._add_chat_line(f"[LIT ENERGY] пчёлы доступны {int(msg.get('time', 12))}с!")
-                self._play_oneshot(AC.SFX_LIT_ENERGY)   # спец-звук активации (один раз)
+                self._show_notice(f"ПЧЁЛЫ АКТИВНЫ  {int(msg.get('time', 12))}с!",
+                                  color=(0.4, 0.82, 1.0, 1), duration=2.5)
+                self._play_oneshot(AC.SFX_LIT_ENERGY)
         elif kind == "cup_placed":
-            self._add_chat_line(f"[РИТУАЛ] стакан поставлен ({msg.get('count', '?')}/4)")
+            self._show_notice(f"Стакан поставлен  {msg.get('count', '?')}/4",
+                              color=(1.0, 0.88, 0.45, 1), duration=2.5)
             self._play_oneshot(AC.SFX_PICKUP, rate=0.7)
         elif kind == "black_king_spawn":
             import random as _r
-            self._add_chat_line("=== ВСЕ 4 СТАКАНА НА МЕСТЕ! ПРОБУЖДАЕТСЯ BLACK KING... ===")
+            self._show_notice("=== BLACK KING ПРОБУЖДАЕТСЯ! ===",
+                              color=(0.7, 0.0, 1.0, 1), duration=5.0)
             self._play_oneshot(AC.SFX_BLACK_KING_SPAWN)
             self._play_music(AC.MUSIC_BLACK_KING)
             # телепортировать локального игрока на спавн
@@ -2120,7 +2167,8 @@ class Roblox2(ShowBase):
                 cn.hide()
                 self._bk_cup_nodes.append(cn)
         elif kind == "bk_defeated":
-            self._add_chat_line(f"=== BLACK KING ПОВЕРЖЕН! {msg.get('by')} стал легендой! +50 всем! ===")
+            self._show_notice(f"BLACK KING ПОВЕРЖЕН!  {msg.get('by')} стал легендой!  +50 всем!",
+                              color=(1.0, 0.85, 0.1, 1), duration=6.0)
             self._play_oneshot(AC.SFX_BLACK_KING_DEATH)
             # взрыв частиц на месте каждого миньона перед их исчезновением
             for mid, mnode in list(self.bk_minion_nodes.items()):
@@ -2132,7 +2180,8 @@ class Roblox2(ShowBase):
             pos = msg.get("pos", [0.0, 0.0])
             self._start_bk_death_cutscene(pos[0], pos[1])
         elif kind == "bk_wipe":
-            self._add_chat_line("[ВАЙП] все погибли! БЛЭК КИНГ уходит... волна возобновится.")
+            self._show_notice("ВАЙП  BLACK KING уходит...  волна возобновится",
+                              color=(1.0, 0.2, 0.2, 1), duration=5.0)
             self._start_bk_wipe_sink(msg)
             self._play_music(AC.MUSIC_PHASE1)
         elif kind == "bk_voice":
@@ -2143,10 +2192,15 @@ class Roblox2(ShowBase):
                 vol = self._vol_at(bkp[0], bkp[1]) if bkp else 1.0
                 self._play_oneshot(_r.choice(voices), volume=vol)
         elif kind == "bk_phase2":
-            self._add_chat_line("=== BLACK KING ВЗБЕСИЛСЯ! ФАЗА 2: ЛАЗЕРЫ + ОЖИВШИЕ СТАКАНЫ! ===")
+            self._show_notice("BLACK KING ВЗБЕСИЛСЯ!  ФАЗА 2: ЛАЗЕРЫ + СТАКАНЫ!",
+                              color=(0.85, 0.0, 1.0, 1), duration=5.0)
             self._flash_screen((0.6, 0.0, 1.0, 1), duration=1.4, hold=0.3)
             self._shake(0.8)
-            self._play_oneshot(AC.SFX_BLACK_KING_SPAWN, volume=0.7)
+            phase2_snd = AC.SFX_BLACK_KING_PHASE2
+            import os as _os
+            self._play_oneshot(
+                phase2_snd if _os.path.exists(phase2_snd) else AC.SFX_BLACK_KING_SPAWN,
+                volume=0.85)
         elif kind == "bk_shoot":
             pos = msg.get("pos", [0, 0, 2.5])
             self.particles.burst(pos, count=6, color=(0.7, 0.0, 1.0, 1), speed=5.0,
@@ -2160,6 +2214,8 @@ class Roblox2(ShowBase):
             pos = msg.get("pos", [0, 0, 1.5])
             self.particles.burst(pos, count=4, color=(0.3, 1.0, 0.2, 1), speed=3.0,
                                  size=0.18, life=0.3, grav=-1.0, spread=0.5, up=0.3)
+            self._play_oneshot(AC.SFX_BK_CUP_SHOOT,
+                               volume=self._vol_at(pos[0], pos[1]) * 0.7)
         elif kind == "bk_cup_hit":
             pos = msg.get("pos", [0, 0, 1])
             self.particles.burst(pos, count=8, color=(0.25, 1.0, 0.3, 1), speed=5.0,
@@ -2175,7 +2231,8 @@ class Roblox2(ShowBase):
             self._play_oneshot(AC.SFX_COCKROACH_DEATH, volume=self._vol_at(pos[0], pos[1]),
                                rate=1.5)
         elif kind == "wipe":
-            self._add_chat_line("[ВАЙП] все погибли - начинаем заново с волны 1!")
+            self._show_notice("ВАЙП  все погибли  начинаем с волны 1!",
+                              color=(1.0, 0.2, 0.2, 1), duration=4.0)
             self._play_music(AC.MUSIC_PHASE1)
         elif kind == "boss_gas":
             pos = msg.get("pos", [0, 0])
@@ -2185,15 +2242,18 @@ class Roblox2(ShowBase):
                                      color=(0.55, 0.95, 0.35, 1), speed=5.0, size=0.45,
                                      life=1.4, grav=-1.0, spread=1.0, up=0.5)
         elif kind == "death":
-            self._add_chat_line(f"{msg.get('victim')} погиб от тараканов!")
+            pass  # смерть видна в death_overlay; чат от этого только спамил
         elif kind == "wave":
-            self._add_chat_line(f"[ВОЛНА {msg.get('wave')}] тараканов: {msg.get('count')}")
+            self._show_notice(f"ВОЛНА {msg.get('wave')}  тараканов: {msg.get('count')}",
+                              color=(1.0, 0.65, 0.1, 1), duration=3.0)
         elif kind == "boss_spawn":
-            self._add_chat_line("[БОСС] Папаня вышел! Поливай его сиропом - копи Уважение!")
+            self._show_notice("ПАПАНЯ ВЫШЕЛ!  Поливай сиропом - копи Уважение!",
+                              color=(1.0, 0.4, 0.1, 1), duration=5.0)
             self._play_oneshot(AC.SFX_BOSS_SPAWN)
             self._play_music(AC.MUSIC_BOSS)
         elif kind == "boss_defeated":
-            self._add_chat_line(f"[БОСС] {msg.get('by')} уважил Папаню! +ресурсы всем")
+            self._show_notice(f"ПАПАНЯ ПОВЕРЖЕН!  {msg.get('by')} уважил его!",
+                              color=(1.0, 0.85, 0.1, 1), duration=5.0)
             self._play_oneshot(AC.SFX_BOSS_DEATH)
             self._play_music(AC.MUSIC_PHASE1)
         elif kind == "boss_throw":
@@ -2213,9 +2273,11 @@ class Roblox2(ShowBase):
                                  life=0.6, grav=-6.0, spread=1.0, up=0.8)
             self._apply_blast_knockback(pos)
         elif kind == "ultimate":
-            self._add_chat_line(f"[УЛЬТ] {msg.get('by')}: ПАПАНЯ В ТАКОЕ НЕ ИГРАЛ - тараканы замерли!")
+            self._show_notice(f"{msg.get('by')}: УЛЬТ  тараканы замерли!",
+                              color=(0.4, 1.0, 0.9, 1), duration=3.5)
         elif kind == "neon_wave":
-            self._add_chat_line(f"[ТРЕВОГА] синие неоновые муравьи! стрелков: {msg.get('count')}")
+            self._show_notice(f"СИНИЕ МУРАВЬИ!  стрелков: {msg.get('count')}",
+                              color=(0.4, 0.82, 1.0, 1), duration=4.0)
         elif kind == "neon_shoot":
             pos = msg.get("pos", [0, 0, 1.1])
             self.particles.burst([pos[0], pos[1], pos[2]], count=6,
@@ -2238,20 +2300,20 @@ class Roblox2(ShowBase):
                                rate=random.uniform(1.2, 1.6))   # выше питч = «электронная» смерть
         elif kind == "slit_spawn":
             t = int(msg.get("time", C.SLIT_TIME_LIMIT))
-            self._add_chat_line(
-                f"[ЩЕЛЬ] Появились щели ({msg.get('count', '?')})! Найди и залей "
-                f"МАЙОНЕЗОМ (2) - наполни шкалу. {t}с, иначе все умрут!")
+            self._show_notice(
+                f"ЩЕЛЬ!  Залей МАЙОНЕЗОМ (2)  {t}с иначе все умрут!",
+                color=(1.0, 0.3, 0.5, 1), duration=5.0)
             self._play_oneshot(AC.SFX_SLIT_SPAWN)
         elif kind == "slit_calmed":
             pos = msg.get("pos", [0, 0, 1])
             self.particles.burst([pos[0], pos[1], pos[2]], count=14,
                                  color=(1.0, 0.95, 0.7, 1), speed=4.0, size=0.2,
                                  life=0.6, grav=-6.0, spread=1.0, up=0.8)
-            self._add_chat_line("[ЩЕЛЬ] одна щель удовлетворена")
+            self._show_notice("Щель удовлетворена!", color=(1.0, 0.88, 0.45, 1), duration=2.0)
             # звук успокаивания (calm) идёт В ПРОЦЕССЕ заполнения (см. _apply_snapshot)
         elif kind == "slit_defeated":
             # оглушающий и ОСЛЕПЛЯЮЩИЙ взрыв победы над щелью
-            self._add_chat_line("[ЩЕЛЬ] Все щели повержены! Победа")
+            self._show_notice("ВСЕ ЩЕЛИ ПОВЕРЖЕНЫ!  Победа!", color=(1.0, 0.85, 0.1, 1), duration=4.0)
             self._play_oneshot(AC.SFX_SLIT_DEFEATED, volume=1.0)
             self._flash_screen((1, 1, 1, 1), duration=2.0, hold=0.5)
             self._shake(0.9)
@@ -2263,7 +2325,7 @@ class Roblox2(ShowBase):
             self.particles.burst(p, count=22, color=(1.0, 0.8, 0.3, 1), speed=6.0,
                                  size=0.5, life=1.5, grav=-2.0, spread=1.0, up=0.7)
         elif kind == "slit_failed":
-            self._add_chat_line("[ЩЕЛЬ] Не успели... щель поглотила всех!")
+            self._show_notice("Не успели...  щель поглотила всех!", color=(1.0, 0.1, 0.1, 1), duration=4.0)
         elif kind == "skibidi_hit":
             pos = msg.get("pos", [0, 0, 0])
             self.particles.burst([pos[0], pos[1], pos[2] + 0.2], count=14,

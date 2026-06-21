@@ -588,7 +588,8 @@ class BlackKing:
     Нет шкалы уважения — настоящее HP, наносится сиропом. Первые CINEMATIC_TIME секунд
     стоит на месте (кат-сцена)."""
     __slots__ = ("pos", "dir", "hp", "h", "target_pos", "retarget_at",
-                 "spawn_minion_at", "vz", "hop_at", "cinematic_until", "phase", "shoot_at")
+                 "spawn_minion_at", "vz", "hop_at", "cinematic_until", "phase",
+                 "shoot_at", "flying")
 
     def __init__(self, now):
         self.pos = [0.0, 38.0, 0.0]    # стартует у северного спавна
@@ -602,6 +603,7 @@ class BlackKing:
         self.hop_at = now + C.BLACK_KING_CINEMATIC_TIME        # прыгает после кат-сцены
         self.phase = 1
         self.shoot_at = 0.0
+        self.flying = False    # режим полёта (игрок на 2-м этаже)
 
     @staticmethod
     def _random_point():
@@ -612,7 +614,17 @@ class BlackKing:
                 return [x, y]
         return [0.0, 0.0]
 
-    def update(self, dt, now):
+    def update(self, dt, now, players=None):
+        # обновить режим полёта: летим если хоть один игрок на 2-м этаже
+        if players and self.phase == 2:
+            any_up = any(
+                not pl.dead and pl.pos[2] >= WALL_HEIGHT - 2.0
+                for pl in players.values()
+            )
+            self.flying = any_up
+        else:
+            self.flying = False
+
         # во время кат-сцены не двигаться
         if now < self.retarget_at and self.pos == [0.0, 38.0, 0.0]:
             # стоим на месте
@@ -651,16 +663,29 @@ class BlackKing:
                 self.pos[0], self.pos[1] = nx, ny
             self.pos[0], self.pos[1] = _clamp_to_arena(self.pos[0], self.pos[1])
 
-        # прыжки (как миньоны, но крупнее)
-        if now >= self.hop_at and self.pos[2] <= 0.02:
-            self.vz = C.BLACK_KING_HOP_VZ
-            self.hop_at = now + C.BLACK_KING_HOP_INTERVAL
-
-        # физика Z
-        self.vz += C.GRAVITY * dt
-        self.pos[2] = max(0.0, self.pos[2] + self.vz * dt)
-        if self.pos[2] <= 0.0:
+        if self.flying:
+            # зависание над 2-м этажом: плавный подъём к BK_HOVER_Z
+            target_z = C.BK_HOVER_Z
+            dz = target_z - self.pos[2]
+            self.pos[2] += math.copysign(
+                min(abs(dz), C.BK_HOVER_RISE_SPEED * dt), dz)
             self.vz = 0.0
+        else:
+            # спуск на землю если летели
+            if self.pos[2] > 0.1:
+                self.vz += C.GRAVITY * dt
+                self.pos[2] = max(0.0, self.pos[2] + self.vz * dt)
+                if self.pos[2] <= 0.0:
+                    self.vz = 0.0
+            else:
+                # обычные прыжки по земле
+                if now >= self.hop_at and self.pos[2] <= 0.02:
+                    self.vz = C.BLACK_KING_HOP_VZ
+                    self.hop_at = now + C.BLACK_KING_HOP_INTERVAL
+                self.vz += C.GRAVITY * dt
+                self.pos[2] = max(0.0, self.pos[2] + self.vz * dt)
+                if self.pos[2] <= 0.0:
+                    self.vz = 0.0
 
         self.h = math.degrees(math.atan2(-self.dir[0], self.dir[1]))
 
@@ -1543,7 +1568,7 @@ class World:
     def _update_black_king(self, dt, now):
         if not self.bk_boss:
             return
-        self.bk_boss.update(dt, now)
+        self.bk_boss.update(dt, now, self.players)
 
         # переход в фазу 2 при 50% HP
         if (self.bk_boss.phase == 1
@@ -1583,20 +1608,38 @@ class World:
         self._update_bk_shots(dt, now)
 
     def _bk_shoot(self, now):
-        """BLACK KING стреляет фиолетовым лазером в ближайшего игрока (фаза 2)."""
+        """BLACK KING стреляет фиолетовым лазером (фаза 2)."""
         if not self.bk_boss or now < self.bk_boss.shoot_at:
             return
-        self.bk_boss.shoot_at = now + C.BK_SHOOT_INTERVAL
-        target = _nearest_player(self.players, self.bk_boss.pos, 9999)
-        if not target:
-            return
-        origin = [self.bk_boss.pos[0], self.bk_boss.pos[1], 2.5]
-        tpos = [target.pos[0], target.pos[1], target.pos[2] + C.PLAYER_HEIGHT * 0.5]
-        bksid = self._next_bk_shot_id
-        self._next_bk_shot_id += 1
-        self.bk_shots[bksid] = BKShot(bksid, origin, tpos, now)
-        self.events.append({"t": "event", "kind": "bk_shoot",
-                            "pos": [round(origin[0], 2), round(origin[1], 2), 2.5]})
+
+        origin = [self.bk_boss.pos[0], self.bk_boss.pos[1],
+                  self.bk_boss.pos[2] + 2.5]
+        ev_pos = [round(origin[0], 2), round(origin[1], 2), round(origin[2], 2)]
+
+        if self.bk_boss.flying:
+            # режим полёта: очередь по кругу (все 8 направлений за один тик)
+            self.bk_boss.shoot_at = now + C.BK_RAPID_FIRE_INTERVAL
+            for i in range(C.BK_RAPID_FIRE_DIRS):
+                angle = 2 * math.pi * i / C.BK_RAPID_FIRE_DIRS
+                tpos = [origin[0] + math.cos(angle) * 25,
+                        origin[1] + math.sin(angle) * 25,
+                        origin[2]]
+                bksid = self._next_bk_shot_id
+                self._next_bk_shot_id += 1
+                self.bk_shots[bksid] = BKShot(bksid, origin, tpos, now)
+        else:
+            # наземный режим: прицельный выстрел в ближайшего
+            self.bk_boss.shoot_at = now + C.BK_SHOOT_INTERVAL
+            target = _nearest_player(self.players, self.bk_boss.pos, 9999)
+            if not target:
+                return
+            tpos = [target.pos[0], target.pos[1],
+                    target.pos[2] + C.PLAYER_HEIGHT * 0.5]
+            bksid = self._next_bk_shot_id
+            self._next_bk_shot_id += 1
+            self.bk_shots[bksid] = BKShot(bksid, origin, tpos, now)
+
+        self.events.append({"t": "event", "kind": "bk_shoot", "pos": ev_pos})
 
     def _update_bk_shots(self, dt, now):
         """Обновить фиолетовые лазеры BLACK KING."""
@@ -1712,8 +1755,8 @@ class World:
             owner.kills_session += 1
         self.events.append({"t": "event", "kind": "bk_minion_killed",
                             "pos": [round(m.pos[0], 2), round(m.pos[1], 2)]})
-        # аптечка с шансом 30%
-        if random.random() < C.DROP_CHANCE + 0.10:
+        # аптечка: редко (5%) — миньонов много, частые дропы ломали баланс
+        if random.random() < 0.05:
             did = self._next_drop_id
             self._next_drop_id += 1
             self.drops[did] = {"pos": [m.pos[0], m.pos[1], 0.0], "kind": "health"}

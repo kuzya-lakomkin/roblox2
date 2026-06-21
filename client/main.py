@@ -1442,13 +1442,17 @@ class Roblox2(ShowBase):
         # Иконки оружий — три карточки низ-справа, активная выделяется
         self._weapon_slots = {}  # weapon_key -> (bg_card, label_tn)
         wdefs = [
-            ("syrup", "1", (0.35, 1.0, 0.45, 1)),
-            ("mayo",  "2", (0.97, 0.97, 0.78, 1)),
-            ("hive",  "3", (1.0,  0.75, 0.1, 1)),
+            ("syrup", "1", (0.35, 1.0, 0.45, 1),  AC.ICON_SYRUP_TEXTURE),
+            ("mayo",  "2", (0.97, 0.97, 0.78, 1), AC.ICON_MAYONEZ_TEXTURE),
+            ("hive",  "3", (1.0,  0.75, 0.1, 1),  AC.ICON_HONEY_TEXTURE),
         ]
-        for i, (wkey, hotkey, col) in enumerate(wdefs):
+        for i, (wkey, hotkey, col, icon_path) in enumerate(wdefs):
             cx = 1.28 - i * 0.14
             bg = self._hud_icon(cx, -0.78, (0.1, 0.1, 0.1, 0.55), size=0.058)
+            icon_tex = load_texture(self.loader, icon_path)
+            if icon_tex:
+                bg.setTexture(icon_tex, 1)
+                bg.setColor(1, 1, 1, 0.88)
             tn_key = self._hud_text(f"wi_{wkey}_k", cx, -0.77, 0.028, TextNode.ACenter,
                                     (0.6, 0.6, 0.6, 1))
             tn_key.setText(hotkey)
@@ -2156,7 +2160,7 @@ class Roblox2(ShowBase):
             self._show_notice("=== BLACK KING ПРОБУЖДАЕТСЯ! ===",
                               color=(0.7, 0.0, 1.0, 1), duration=5.0)
             self._play_oneshot(AC.SFX_BLACK_KING_SPAWN)
-            # музыка и ночной фильтр включатся в конце кат-сцены (после возврата камеры)
+            self._play_music(AC.MUSIC_BLACK_KING)  # сразу задать тему кат-сцены
             # телепортировать локального игрока на спавн
             self.pos.set(_r.uniform(-5, 5), _r.uniform(-20, -14), 0.0)
             self.vz = 0.0
@@ -2389,7 +2393,11 @@ class Roblox2(ShowBase):
         self.alive_ants = msg.get("alive", 0)
         self.neon_alive = msg.get("neon", 0)
         self.boss_info = msg.get("boss")
+        prev_bk = self.black_king
         self.black_king = bool(msg.get("black_king"))
+        # при переподключении (black_king_spawn не придёт снова) — сразу включить музыку
+        if self.black_king and not prev_bk and not self._bk_cutscene:
+            self._play_music(AC.MUSIC_BLACK_KING)
         self.bk_boss_info = msg.get("bk_boss")
         # рендер BLACK KING
         self._update_bk_rendering()
@@ -2861,6 +2869,10 @@ class Roblox2(ShowBase):
         # фиксированная позиция у северного края центральной башни — всегда видна
         self._bk_death_pos = (0.0, -6.0)
         self.hud_root.hide()
+        # фиолетовый фильтр из BK-фазы должен остаться видимым в кат-сцене
+        self._bk_night_alpha = max(self._bk_night_alpha, 0.38)
+        self._bk_night_overlay.setColor(0.05, 0.0, 0.12, self._bk_night_alpha)
+        self._bk_night_overlay.show()
         # создаём копию модели специально для кат-сцены
         self._bk_death_node = self._make_bk_boss_node()
         self._bk_death_node.reparentTo(self.render)
@@ -2906,9 +2918,8 @@ class Roblox2(ShowBase):
             self._shake(1.2)
             self._play_music(AC.MUSIC_PHASE1)
             self.hud_root.show()
-            # сбросить ночной фильтр немедленно
-            self._bk_night_alpha = 0.0
-            self._bk_night_overlay.hide()
+            # ночной фильтр гасится плавно — idle-ветка _update_bk_cutscene
+            # сама задержит alpha к 0 (black_king уже False после bk_defeated)
 
     def _start_bk_wipe_sink(self, event_msg):
         """Анимация погружения при bk_wipe: BK и миньоны уходят под землю за 3с."""
@@ -2969,15 +2980,19 @@ class Roblox2(ShowBase):
         import math as _m
         import random as _r
 
-        # когда кат-сцена не идёт — только плавно анимировать ночной фильтр
+        # когда кат-сцена не идёт — плавно анимировать ночной фильтр
         if not self._bk_cutscene:
-            target_a = 0.38 if self.black_king else 0.0
-            self._bk_night_alpha += (target_a - self._bk_night_alpha) * min(1.0, 3.0 * dt)
-            if self._bk_night_alpha > 0.005:
-                self._bk_night_overlay.setColor(0.05, 0.0, 0.12, self._bk_night_alpha)
+            if self._bk_death_cs:
+                # во время death кат-сцены фильтр держим на уровне BK-фазы — не гасить раньше
                 self._bk_night_overlay.show()
             else:
-                self._bk_night_overlay.hide()
+                target_a = 0.38 if self.black_king else 0.0
+                self._bk_night_alpha += (target_a - self._bk_night_alpha) * min(1.0, 3.0 * dt)
+                if self._bk_night_alpha > 0.005:
+                    self._bk_night_overlay.setColor(0.05, 0.0, 0.12, self._bk_night_alpha)
+                    self._bk_night_overlay.show()
+                else:
+                    self._bk_night_overlay.hide()
             return
 
         self._bk_cutscene_t += dt
@@ -3078,8 +3093,7 @@ class Roblox2(ShowBase):
         self.local_worm.root.unstash()
         if hasattr(self, "hud_root"):
             self.hud_root.show()   # вернуть HUD
-        # музыка и эффекты — только теперь, когда камера вернулась к игроку
-        self._play_music(AC.MUSIC_BLACK_KING)
+        # кат-сцена завершена — камера вернулась к игроку, волны начнутся с сервера
         self._show_notice("BLACK KING АКТИВЕН!  УНИЧТОЖЬ ЕГО!",
                           color=(0.9, 0.0, 1.0, 1), duration=4.0)
         self._flash_screen((1.0, 1.0, 1.0, 1.0), duration=1.6, hold=0.25)

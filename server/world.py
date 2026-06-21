@@ -8,7 +8,7 @@ from common import config as C
 from common.citydata import (building_rects, in_any_building, BOSS_SPAWN,
                              platform_top_at, support_z, near_wall,
                              slit_spawn_points, line_blocked, WALL_HEIGHT,
-                             CUP_SPOTS, CUP_SPOT_RADIUS)
+                             LEVEL2_Z, CUP_SPOTS, CUP_SPOT_RADIUS)
 from server.navgrid import NavGrid
 
 _BUILDING_RECTS = building_rects(pad=0.5)
@@ -1087,12 +1087,13 @@ class World:
                 if _dist2(shot.pos, [self.bk_boss.pos[0], self.bk_boss.pos[1], 2.0]) < 16.0:
                     self._hurt_bk_boss(C.PROJECTILE_DAMAGE, shot.owner, now)
                     hit = True
-            # маленькие копии BLACK KING — 1 капля сиропа убивает
-            # XY-проверка: миньоны прыгают, z меняется — не должно влиять на попадание
+            # маленькие копии BLACK KING — 1 капля сиропа убивает (3D-хитбокс)
             if not hit and self.bk_minions and shot.kind == C.WEAPON_SYRUP:
                 for mid, m in list(self.bk_minions.items()):
-                    xy2 = (shot.pos[0]-m.pos[0])**2 + (shot.pos[1]-m.pos[1])**2
-                    if xy2 < (C.PROJECTILE_RADIUS + 0.7) ** 2:
+                    cx = m.pos[0]; cy = m.pos[1]; cz = m.pos[2] + 0.6
+                    dist2 = ((shot.pos[0]-cx)**2 + (shot.pos[1]-cy)**2
+                             + (shot.pos[2]-cz)**2)
+                    if dist2 < (C.PROJECTILE_RADIUS + 0.85) ** 2:
                         self._kill_bk_minion(mid, shot.owner, now)
                         hit = True
                         break
@@ -1525,7 +1526,7 @@ class World:
                 # восстановить волну до той что была перед призывом
                 self.wave = max(0, self._pre_bk_wave - 1)
                 self._wave_pending = True
-                self.next_wave_at = now + 4.5   # 3с анимация погружения + буфер
+                self.next_wave_at = now + 7.0   # кат-сцена wipe + буфер
                 self.next_slit_at = now + random.uniform(*C.SLIT_INTERVAL)
             else:
                 self.bk_minions.clear()
@@ -1620,13 +1621,15 @@ class World:
         ev_pos = [round(origin[0], 2), round(origin[1], 2), round(origin[2], 2)]
 
         if self.bk_boss.flying:
-            # режим полёта: очередь по кругу (все 8 направлений за один тик)
+            # режим полёта: очередь по кругу, направления вращаются вместе с боссом
             self.bk_boss.shoot_at = now + C.BK_RAPID_FIRE_INTERVAL
+            base_angle = math.radians(self.bk_boss.h)  # угол вращения босса
+            target_z = LEVEL2_Z + C.PLAYER_HEIGHT * 0.5  # уровень игрока на 2-м этаже
             for i in range(C.BK_RAPID_FIRE_DIRS):
-                angle = 2 * math.pi * i / C.BK_RAPID_FIRE_DIRS
+                angle = base_angle + 2 * math.pi * i / C.BK_RAPID_FIRE_DIRS
                 tpos = [origin[0] + math.cos(angle) * 25,
                         origin[1] + math.sin(angle) * 25,
-                        C.PLAYER_HEIGHT * 0.5]  # целимся на уровень игрока
+                        target_z]  # пули летят к уровню 2-го этажа
                 bksid = self._next_bk_shot_id
                 self._next_bk_shot_id += 1
                 self.bk_shots[bksid] = BKShot(bksid, origin, tpos, now)
@@ -1744,9 +1747,9 @@ class World:
             self.bk_cup_shots.clear()
             self.black_king = False
             self.cup_spots = [False] * len(CUP_SPOTS)
-            # запустить новую волну сразу после победы над BLACK KING
+            # волна стартует после кат-сцены смерти BK (5с) + буфер
             self._wave_pending = True
-            self.next_wave_at = now + C.WAVE_DELAY
+            self.next_wave_at = now + 7.0
 
     def _kill_bk_minion(self, mid, owner_id, now):
         m = self.bk_minions.pop(mid, None)

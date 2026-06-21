@@ -14,7 +14,7 @@ PLAYER_HEIGHT = 1.8
 PLAYER_MAX_HP = 100
 
 # --- Снаряды "секретной жидкости" (капли струи) ---
-PROJECTILE_SPEED = 34.0
+PROJECTILE_SPEED = 44.0
 PROJECTILE_LIFETIME = 1.4    # секунд (короткая струя)
 PROJECTILE_RADIUS = 0.4
 PROJECTILE_DAMAGE = 5        # на одну каплю (струя бьёт частотой)

@@ -750,6 +750,10 @@ class Roblox2(ShowBase):
             self.firing = False
             self._stop_spray_sound()
             self._stop_step_loops()
+            # остановить все SFX (голоса боссов, щелевые звуки и т.д.)
+            for _mgr in getattr(self, 'sfxManagerList', []):
+                try: _mgr.stopAllSounds()
+                except Exception: pass
             # немедленно скрыть экран смерти и красный эффект урона
             self._death_alpha = 0.0
             self.death_overlay.hide()
@@ -1495,7 +1499,7 @@ class Roblox2(ShowBase):
             "mayo":  (0.97, 0.97, 0.78, 1),
             "hive":  (1.0,  0.75, 0.1,  1),
         }
-        self._w_label   = self._hud_text("w_name", _wix, _wiz - 0.115, 0.038,
+        self._w_label   = self._hud_text("w_name", _wix, _wiz - 0.120, 0.052,
                                          TextNode.ACenter, (1, 1, 1, 1))
         self._w_key_node = self._hud_text("w_key",  _wix, _wiz + 0.115, 0.030,
                                           TextNode.ACenter, (0.6, 0.6, 0.6, 1))
@@ -1660,7 +1664,12 @@ class Roblox2(ShowBase):
         if not self._can_fire():
             return
         if self.weapon == "hive":
-            self._emit_projectile()           # улей - одиночный залп по клику
+            # попытка выстрела автоматически активирует LIT ENERGY (если ещё не активно)
+            if self.bee_time <= 0:
+                self._set_weapon("hive")   # активация: проверит lit_energy и покажет ошибку
+            if self.bee_time <= 0:         # активация не удалась — не стрелять
+                return
+            self._emit_projectile()
             return
         self.firing = True                     # сироп/майонез - струя при зажатии
         self._fire_accum = C.SPRAY_COOLDOWN    # первая капля сразу
@@ -2257,7 +2266,7 @@ class Roblox2(ShowBase):
             if voices:
                 bkp = self.bk_boss_info["pos"] if self.bk_boss_info else None
                 vol = self._vol_at(bkp[0], bkp[1]) if bkp else 1.0
-                self._play_oneshot(_r.choice(voices), volume=vol)
+                self._play_oneshot(_r.choice(voices), volume=max(0.85, vol))
         elif kind == "bk_phase2":
             self._show_notice("BLACK KING ВЗБЕСИЛСЯ!  ФАЗА 2: ЛАЗЕРЫ + СТАКАНЫ!",
                               color=(0.85, 0.0, 1.0, 1), duration=5.0)

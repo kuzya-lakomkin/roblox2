@@ -439,11 +439,13 @@ class NeonAnt:
         self._reset_pos()
 
     def _reset_pos(self):
-        for _ in range(20):
+        for _ in range(40):
             x = random.uniform(-C.WORLD_SIZE, C.WORLD_SIZE)
             y = random.uniform(-C.WORLD_SIZE, C.WORLD_SIZE)
             if not in_any_building(x, y, _BUILDING_RECTS):
                 break
+        else:
+            x, y = 0.0, -20.0  # безопасный fallback вне стен
         self.pos = [x, y, 0.0]
         ang = random.uniform(0, 2 * math.pi)
         self.dir = [math.cos(ang), math.sin(ang)]
@@ -724,12 +726,14 @@ class BlackKingMinion:
         self.hop_at = 0.0               # прыгнет сразу при первом update
         self.climbing = False
         if spawn_pos is None:
-            for _ in range(20):
+            for _ in range(40):
                 x = random.uniform(-C.WORLD_SIZE * 0.7, C.WORLD_SIZE * 0.7)
                 y = random.uniform(-C.WORLD_SIZE * 0.7, C.WORLD_SIZE * 0.7)
                 if not in_any_building(x, y, _BUILDING_RECTS):
+                    spawn_pos = (x, y)
                     break
-            spawn_pos = (x, y)
+            else:
+                spawn_pos = (0.0, -20.0)
         self.pos = [spawn_pos[0], spawn_pos[1], 0.0]
         ang = random.uniform(0, 2 * math.pi)
         self.dir = [math.cos(ang), math.sin(ang)]
@@ -1096,7 +1100,13 @@ class World:
                     hit = True
             # BLACK KING — сироп наносит HP-урон
             if not hit and self.bk_boss and shot.kind == C.WEAPON_SYRUP:
-                if _dist2(shot.pos, [self.bk_boss.pos[0], self.bk_boss.pos[1], 2.0]) < 16.0:
+                bk = self.bk_boss
+                if bk.flying:
+                    # летит высоко — только XY (снаряды не достигают Z=14)
+                    d2 = (shot.pos[0]-bk.pos[0])**2 + (shot.pos[1]-bk.pos[1])**2
+                else:
+                    d2 = _dist2(shot.pos, [bk.pos[0], bk.pos[1], bk.pos[2] + 2.0])
+                if d2 < 16.0:
                     self._hurt_bk_boss(C.PROJECTILE_DAMAGE, shot.owner, now)
                     hit = True
             # маленькие копии BLACK KING — 1 капля сиропа убивает (3D-хитбокс)
@@ -1603,9 +1613,15 @@ class World:
             for _ in range(count):
                 mid = self._next_bk_minion_id
                 self._next_bk_minion_id += 1
-                ox = self.bk_boss.pos[0] + random.uniform(-8, 8)
-                oy = self.bk_boss.pos[1] + random.uniform(-8, 8)
-                ox, oy = _clamp_to_arena(ox, oy)
+                # ищем свободную точку рядом с боссом без стен
+                ox, oy = self.nav.random_free_point()
+                for _attempt in range(30):
+                    cx = self.bk_boss.pos[0] + random.uniform(-8, 8)
+                    cy = self.bk_boss.pos[1] + random.uniform(-8, 8)
+                    cx, cy = _clamp_to_arena(cx, cy)
+                    if not in_any_building(cx, cy, _BUILDING_RECTS):
+                        ox, oy = cx, cy
+                        break
                 self.bk_minions[mid] = BlackKingMinion(mid, (ox, oy))
             self.bk_boss.spawn_minion_at = now + C.BLACK_KING_MINION_SPAWN_INTERVAL
             self.events.append({"t": "event", "kind": "bk_minion_spawn", "count": count})
@@ -1670,8 +1686,9 @@ class World:
             for pl in self.players.values():
                 if pl.dead:
                     continue
-                tc = [pl.pos[0], pl.pos[1], pl.pos[2] + C.PLAYER_HEIGHT * 0.5]
-                if _dist2(sh.pos, tc) < 1.44:   # радиус попадания ~1.2
+                # XY-цилиндр: летящие снаряды на Z=12.9 должны попадать и в игроков на земле
+                d2_xy = (sh.pos[0]-pl.pos[0])**2 + (sh.pos[1]-pl.pos[1])**2
+                if d2_xy < 1.44:   # XY-радиус ~1.2
                     self._hurt(pl, C.BK_SHOT_DAMAGE, now, None)
                     self.events.append({"t": "event", "kind": "bk_shot_hit",
                                         "pos": [round(sh.pos[0], 2), round(sh.pos[1], 2),

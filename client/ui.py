@@ -549,11 +549,13 @@ class SettingsMenu(Screen):
         self.app._music_vol = v / 100.0
         if self.app._music and hasattr(self.app._music, "setVolume"):
             self.app._music.setVolume(self.app._music_vol)
+        self.app._save_settings()
 
     def _on_sfx_slider(self):
         v = int(self.sfx_slider["value"])
         self._sfx_val_lbl["text"] = f"{v}%"
         self.app._sfx_vol = v / 100.0
+        self.app._save_settings()
 
     def _apply(self):
         w, h = (int(v) for v in self.res_menu.get().split("x"))

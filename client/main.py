@@ -1668,8 +1668,6 @@ class Roblox2(ShowBase):
             # попытка выстрела автоматически активирует LIT ENERGY (если ещё не активно)
             if self.bee_time <= 0:
                 self._set_weapon("hive")   # активация: проверит lit_energy и покажет ошибку
-                if self.bee_time > 0:      # активация прошла — звук именно здесь (при выстреле)
-                    self._play_oneshot(AC.SFX_LIT_ENERGY, volume=0.9)
             if self.bee_time <= 0:         # активация не удалась — не стрелять
                 return
             self._emit_projectile()
@@ -1833,6 +1831,7 @@ class Roblox2(ShowBase):
                     self._pending_use_lit = True  # защита: снапшот с bees=0 не откатит оружие
                 self.bee_time = C.BEE_WINDOW
                 self._show_notice("LIT ENERGY потрачено  пчёлы активны!", color=(0.4, 0.82, 1.0, 1), duration=2.5)
+                self._play_oneshot(AC.SFX_LIT_ENERGY, volume=0.9)
             else:
                 self._show_notice("Нужна LIT ENERGY  выбей её с тараканов", color=(0.9, 0.6, 0.1, 1), duration=2.5)
                 return

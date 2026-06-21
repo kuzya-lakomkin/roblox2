@@ -455,6 +455,13 @@ class Roblox2(ShowBase):
         self._sfx_vol   = max(0.0, min(1.0, sfx_vol))
         if self._music and hasattr(self._music, "setVolume"):
             self._music.setVolume(self._music_vol)
+        # немедленно обновить все играющие loop-звуки
+        if hasattr(self, "_worm_step_snd") and self._worm_step_snd:
+            self._worm_step_snd.setVolume(0.5 * self._sfx_vol)
+        if hasattr(self, "_roach_step_snd") and self._roach_step_snd:
+            self._roach_step_snd.setVolume(self._sfx_vol)
+        if hasattr(self, "_roach_laugh_snd") and self._roach_laugh_snd:
+            self._roach_laugh_snd.setVolume(self._sfx_vol)
         self._save_settings()
 
     def _enter_hub(self):
@@ -1914,7 +1921,9 @@ class Roblox2(ShowBase):
         if self._roach_step_snd is not None and self.ant_nodes:
             nd = min(math.hypot(n.getX() - self.pos.x, n.getY() - self.pos.y)
                      for n in self.ant_nodes.values())
-            self._roach_step_snd.setVolume(self._vol_for_dist(nd, max_dist=35.0))
+            self._roach_step_snd.setVolume(self._vol_for_dist(nd, max_dist=35.0) * self._sfx_vol)
+        if self._worm_step_snd is not None:
+            self._worm_step_snd.setVolume(0.5 * self._sfx_vol)
         # ржач тараканов: следующий звук смеха ПОСЛЕ того, как доиграл предыдущий
         if slit_active and self.alive_ants > 0:
             if self._roach_laugh_snd is None:
@@ -1926,7 +1935,7 @@ class Roblox2(ShowBase):
                     nd = min(math.hypot(n.getX() - self.pos.x, n.getY() - self.pos.y)
                              for n in self.ant_nodes.values())
                     vol = self._vol_for_dist(nd, max_dist=35.0)
-                s.setVolume(vol)
+                s.setVolume(vol * self._sfx_vol)
                 if s.status() != AudioSound.PLAYING:
                     s.play()
         elif self._roach_laugh_snd is not None:
@@ -2147,7 +2156,7 @@ class Roblox2(ShowBase):
             self._show_notice("=== BLACK KING ПРОБУЖДАЕТСЯ! ===",
                               color=(0.7, 0.0, 1.0, 1), duration=5.0)
             self._play_oneshot(AC.SFX_BLACK_KING_SPAWN)
-            self._play_music(AC.MUSIC_BLACK_KING)
+            # музыка и ночной фильтр включатся в конце кат-сцены (после возврата камеры)
             # телепортировать локального игрока на спавн
             self.pos.set(_r.uniform(-5, 5), _r.uniform(-20, -14), 0.0)
             self.vz = 0.0
@@ -2401,17 +2410,21 @@ class Roblox2(ShowBase):
                 del self.bk_minion_nodes[mid]
 
         # фиолетовые лазеры BLACK KING (фаза 2)
+        flying_mode = self.bk_boss_info.get("flying", False) if self.bk_boss_info else False
         seen_bks = set()
         for bks in msg.get("bk_shots", []):
             bksid, sx, sy, sz = bks
             seen_bks.add(bksid)
             node = self.bk_shot_nodes.get(bksid)
             if node is None:
-                node = make_sphere(0.35, 8, 8, (0.6, 0.0, 1.0, 1))
+                node = make_sphere(0.42, 8, 8, (0.6, 0.0, 1.0, 1))
+                node.setScale(1.5, 0.4, 1.5)   # плоский диск — вращение заметно
                 node.setLightOff(1)
                 node.reparentTo(self.render)
                 self.bk_shot_nodes[bksid] = node
             node.setPos(sx, sy, sz)
+            if flying_mode:
+                node.setH(node.getH() + 18)  # ~540°/s при 30Hz — хаотичное вращение
             self.particles.burst([sx, sy, sz], count=1, color=(0.7, 0.0, 1.0, 1),
                                  speed=1.5, size=0.22, life=0.3, grav=-0.5, spread=0.4, up=0.1)
         for bksid in list(self.bk_shot_nodes):
@@ -2842,10 +2855,11 @@ class Roblox2(ShowBase):
         return make_bk_minion()
 
     def _start_bk_death_cutscene(self, x, y):
-        """Запустить кат-сцену гибели BLACK KING: уходит под землю."""
+        """Запустить кат-сцену гибели BLACK KING: уходит под землю у центральной башни."""
         self._bk_death_cs = True
         self._bk_death_t = 0.0
-        self._bk_death_pos = (x, y)
+        # фиксированная позиция у северного края центральной башни — всегда видна
+        self._bk_death_pos = (0.0, -6.0)
         self.hud_root.hide()
         # создаём копию модели специально для кат-сцены
         self._bk_death_node = self._make_bk_boss_node()
@@ -2864,15 +2878,12 @@ class Roblox2(ShowBase):
         t = self._bk_death_t
         x, y = self._bk_death_pos
 
-        # камера — смотрит на позицию гибели с той же стороны, что и сам BK
-        # направление «от центра» чтобы не закрывала центральная башня
+        # камера — с юга, смотрит на центральную башню и тонущего BK
         frac = min(1.0, t / DURATION)
-        cam_z = 10.0 + 4.0 * (1.0 - frac)
-        cam_d = 18.0 - 10.0 * frac
-        dist_from_center = math.hypot(x, y) or 1.0
-        nx, ny = x / dist_from_center, y / dist_from_center  # от центра к боссу
-        self.camera.setPos(x + nx * cam_d, y + ny * cam_d, cam_z)
-        self.camera.lookAt(x, y, 2.0)
+        cam_z = 8.0 + 6.0 * (1.0 - frac)
+        cam_d = 16.0 - 8.0 * frac   # приближается по мере погружения
+        self.camera.setPos(x, y - cam_d, cam_z)
+        self.camera.lookAt(x, y, 1.5)
 
         # модель тонет под землю
         sink = max(-7.0, -frac * 7.0)
@@ -3067,6 +3078,10 @@ class Roblox2(ShowBase):
         self.local_worm.root.unstash()
         if hasattr(self, "hud_root"):
             self.hud_root.show()   # вернуть HUD
+        # музыка и эффекты — только теперь, когда камера вернулась к игроку
+        self._play_music(AC.MUSIC_BLACK_KING)
+        self._show_notice("BLACK KING АКТИВЕН!  УНИЧТОЖЬ ЕГО!",
+                          color=(0.9, 0.0, 1.0, 1), duration=4.0)
         self._flash_screen((1.0, 1.0, 1.0, 1.0), duration=1.6, hold=0.25)
         self._shake(0.6)
 

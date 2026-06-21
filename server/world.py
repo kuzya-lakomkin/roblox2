@@ -687,14 +687,17 @@ class BlackKing:
                 if self.pos[2] <= 0.0:
                     self.vz = 0.0
 
-        self.h = math.degrees(math.atan2(-self.dir[0], self.dir[1]))
+        if self.flying:
+            self.h += 200.0 * dt   # вращение вокруг оси при полёте
+        else:
+            self.h = math.degrees(math.atan2(-self.dir[0], self.dir[1]))
 
     def snapshot(self):
         now = time.time()
         return {"pos": [round(v, 2) for v in self.pos],
                 "h": round(self.h, 1), "hp": self.hp, "max_hp": C.BLACK_KING_HP,
                 "cinematic": now < self.spawn_minion_at - C.BLACK_KING_MINION_SPAWN_INTERVAL,
-                "phase": self.phase}
+                "phase": self.phase, "flying": self.flying}
 
 
 class BlackKingMinion:
@@ -1623,7 +1626,7 @@ class World:
                 angle = 2 * math.pi * i / C.BK_RAPID_FIRE_DIRS
                 tpos = [origin[0] + math.cos(angle) * 25,
                         origin[1] + math.sin(angle) * 25,
-                        origin[2]]
+                        C.PLAYER_HEIGHT * 0.5]  # целимся на уровень игрока
                 bksid = self._next_bk_shot_id
                 self._next_bk_shot_id += 1
                 self.bk_shots[bksid] = BKShot(bksid, origin, tpos, now)

@@ -1358,7 +1358,7 @@ class Roblox2(ShowBase):
     def _on_escape(self):
         if self.state == "COMBAT":
             if self.chat_active:
-                self._toggle_chat()
+                self._close_chat()
             else:
                 self.pause()
         elif self.state == "SETTINGS":
@@ -1518,26 +1518,25 @@ class Roblox2(ShowBase):
         self.entry.hide()
 
     def _toggle_chat(self):
-        if self.state != "COMBAT":
-            return
-        self.chat_active = not self.chat_active
-        if self.chat_active:
-            self._set_mouse_captured(False)
-            self.entry.show()
-            self.entry.enterText("")
-            self.entry["focus"] = 1
-        else:
-            self.entry.hide()
-            self.entry["focus"] = 0
-            self._set_mouse_captured(True)
+        if self.state != "COMBAT" or self.chat_active:
+            return  # только открывает; закрытие — через _send_chat
+        self.chat_active = True
+        self._set_mouse_captured(False)
+        self.entry.show()
+        self.entry.enterText("")
+        self.entry["focus"] = 1
+
+    def _close_chat(self):
+        self.chat_active = False
+        self.entry.hide()
+        self.entry["focus"] = 0
+        self._set_mouse_captured(True)
 
     def _send_chat(self, text):
         text = (text or "").strip()
-        if text:
+        if text and self.net:
             self.net.send({"t": "chat", "msg": text})
-        self.entry.enterText("")
-        if self.chat_active:
-            self._toggle_chat()
+        self._close_chat()
 
     def _add_chat_line(self, line):
         self.chat_lines.append(line)
@@ -2123,8 +2122,9 @@ class Roblox2(ShowBase):
             drop = msg.get("drop", "ресурс")
             if msg.get("by") == self.player_name:
                 if drop == "lit_energy":
-                    self._show_notice("LIT ENERGY подобран!  [3] - активировать пчёл",
+                    self._show_notice("LIT ENERGY подобран!  пчёлы активированы!",
                                       color=(0.4, 0.82, 1.0, 1))
+                    self._set_weapon("hive")  # сразу переключиться на улей
                 elif drop == "cup":
                     self._show_notice("СТАКАН подобран!  неси в угол карты  [R] - поставить",
                                       color=(1.0, 0.88, 0.45, 1))

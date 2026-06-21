@@ -753,7 +753,7 @@ class BlackKingMinion:
         else:
             self.climbing = False
 
-        # горизонтальное движение — плавно каждый кадр (без рывков)
+        # горизонтальное движение
         step = C.BLACK_KING_MINION_SPEED * dt
         nx = self.pos[0] + self.dir[0] * step
         ny = self.pos[1] + self.dir[1] * step
@@ -764,14 +764,14 @@ class BlackKingMinion:
         elif not in_any_building(self.pos[0], ny, _BUILDING_RECTS):
             self.pos[1] = ny
         self.pos[0], self.pos[1] = _clamp_to_arena(self.pos[0], self.pos[1])
-        # попрыгунчик: отскок при каждом касании земли
+        # попрыгунчик: при приземлении — сразу новый прыжок (без таймера)
         self.vz += C.GRAVITY * dt
-        self.pos[2] = max(0.0, self.pos[2] + self.vz * dt)
-        if self.pos[2] <= 0.001 and self.vz <= 0:
-            self.vz = C.BLACK_KING_MINION_HOP_VZ
-            self.hop_at = now + C.BLACK_KING_MINION_HOP_INTERVAL
-        if self.pos[2] <= 0.0:
-            self.vz = 0.0
+        new_z = self.pos[2] + self.vz * dt
+        if new_z <= 0.0:
+            self.pos[2] = 0.0
+            self.vz = C.BLACK_KING_MINION_HOP_VZ   # мгновенный отскок
+        else:
+            self.pos[2] = new_z
 
     def snapshot(self):
         return [self.mid, round(self.pos[0], 2), round(self.pos[1], 2), round(self.pos[2], 2)]

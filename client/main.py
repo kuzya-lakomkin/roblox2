@@ -1014,12 +1014,6 @@ class Roblox2(ShowBase):
                 return
             elif kind == 'pickup':
                 self._play_oneshot(AC.SFX_PICKUP, volume=1.0)
-                if ev.get('drop') == 'lit_energy' and self.bee_time <= 0:
-                    # автовыбор пчёл сразу при подборе (как в онлайн-режиме)
-                    w.use_lit_energy(1)
-                    self.bee_time = C.BEE_WINDOW
-                    self.weapon = "hive"
-                    self._play_oneshot(AC.SFX_LIT_ENERGY, volume=0.9)
         w.events.clear()
         step_key = (self._tut_steps[self._tut_step][0]
                     if self._tut_step < len(self._tut_steps) else '_done')
@@ -1046,7 +1040,7 @@ class Roblox2(ShowBase):
             self._tut_next()
         elif step_key == 'ant' and not w.ants and not self._tut_ant_was_alive:
             self._tut_next()
-        elif step_key == 'pickup_lit' and self.bee_time > 0:
+        elif step_key == 'pickup_lit' and (player_lit > 0 or self.bee_time > 0):
             self._play_oneshot(AC.SFX_JOIN_PHASE1, volume=0.7)
             self._tut_next()
         elif step_key == 'neon' and not w.neon_ants and not self._tut_neon_was_alive:
@@ -1321,8 +1315,11 @@ class Roblox2(ShowBase):
         def _bind_move(action):
             key = kb.get(action, "")
             if key:
-                self.accept(key,        self._set_key, [action, True])
-                self.accept(f"{key}-up", self._set_key, [action, False])
+                self.accept(key,              self._set_key, [action, True])
+                self.accept(f"{key}-up",      self._set_key, [action, False])
+                # Panda3D добавляет "shift-" к клавишам пока удерживается Shift
+                self.accept(f"shift-{key}",     self._set_key, [action, True])
+                self.accept(f"shift-{key}-up",  self._set_key, [action, False])
 
         _bind_move("forward"); _bind_move("backward")
         _bind_move("left");    _bind_move("right")

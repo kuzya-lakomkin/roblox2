@@ -1764,6 +1764,8 @@ class World:
             # волна стартует после кат-сцены (5с) + вспышки (2.5с) + пауза (2.5с) = 10с
             self._wave_pending = True
             self.next_wave_at = now + 10.0
+            # щели не спавнятся во время кат-сцены смерти + запас
+            self.next_slit_at = now + 20.0
 
     def _kill_bk_minion(self, mid, owner_id, now):
         m = self.bk_minions.pop(mid, None)

@@ -750,6 +750,11 @@ class Roblox2(ShowBase):
             self.firing = False
             self._stop_spray_sound()
             self._stop_step_loops()
+            # немедленно скрыть экран смерти и красный эффект урона
+            self._death_alpha = 0.0
+            self.death_overlay.hide()
+            self._hurt_alpha = 0.0
+            self._hurt_vignette.hide()
         # очистить туториал
         for attr in ("_tut_overlay", "_tut_black"):
             node = getattr(self, attr, None)
@@ -1209,6 +1214,13 @@ class Roblox2(ShowBase):
             self.vignette.setColor(1, 1, 1, min(0.65, self._vign_alpha))
         else:
             self.vignette.hide()
+        # красный вигнет по краям при уроне
+        self._hurt_alpha = max(0.0, self._hurt_alpha - dt * 2.8)
+        if self._hurt_alpha > 0.01:
+            self._hurt_vignette.show()
+            self._hurt_vignette.setColor(1, 1, 1, self._hurt_alpha)
+        else:
+            self._hurt_vignette.hide()
 
     def _apply_blast_knockback(self, pos):
         """Отброс ЛОКАЛЬНОГО игрока от взрыва босса (игрок авторитетен над позицией)."""
@@ -1325,14 +1337,38 @@ class Roblox2(ShowBase):
         _bind_move("left");    _bind_move("right")
         _bind_move("jump")
 
-        self.accept("mouse1",    self._on_fire_down)
-        self.accept("mouse1-up", self._on_fire_up)
-        self.accept(kb.get("weapon1", "1"), self._set_weapon, ["syrup"])
-        self.accept(kb.get("weapon2", "2"), self._set_weapon, ["mayo"])
-        self.accept(kb.get("weapon3", "3"), self._set_weapon, ["hive"])
+        self.accept("mouse1",          self._on_fire_down)
+        self.accept("mouse1-up",       self._on_fire_up)
+        self.accept("shift-mouse1",    self._on_fire_down)   # Shift зажат — стрельба не блокируется
+        self.accept("shift-mouse1-up", self._on_fire_up)
+        w1 = kb.get("weapon1", "1"); w2 = kb.get("weapon2", "2"); w3 = kb.get("weapon3", "3")
+        self.accept(w1,          self._set_weapon, ["syrup"])
+        self.accept(w2,          self._set_weapon, ["mayo"])
+        self.accept(w3,          self._set_weapon, ["hive"])
+        self.accept(f"shift-{w1}", self._set_weapon, ["syrup"])  # Shift зажат — смена оружия
+        self.accept(f"shift-{w2}", self._set_weapon, ["mayo"])
+        self.accept(f"shift-{w3}", self._set_weapon, ["hive"])
         gas_key = kb.get("gas", "lshift")
         self.accept(gas_key,          self._set_key, ["gas", True])
         self.accept(gas_key + "-up",  self._set_key, ["gas", False])
+
+        def _cycle_weapon(step):
+            _weapons = ["syrup", "mayo", "hive"]
+            cur = self.weapon if self.weapon in _weapons else "syrup"
+            idx = _weapons.index(cur)
+            # пропустить hive если нет LIT ENERGY и пчёлы не активны
+            for _ in range(len(_weapons)):
+                idx = (idx + step) % len(_weapons)
+                nxt = _weapons[idx]
+                if nxt != "hive" or self.bee_time > 0 or self.lit_energy > 0:
+                    break
+            self._set_weapon(_weapons[idx])
+
+        self.accept("wheel_up",         lambda: _cycle_weapon(-1))
+        self.accept("wheel_down",       lambda: _cycle_weapon(+1))
+        self.accept("shift-wheel_up",   lambda: _cycle_weapon(-1))
+        self.accept("shift-wheel_down", lambda: _cycle_weapon(+1))
+
         self.accept(kb.get("ult",  "q"),      self._ultimate)
         self.accept(kb.get("place_cup", "r"), self._place_cup)
         self.accept(kb.get("camera", "c"),    self._toggle_camera)
@@ -1446,30 +1482,26 @@ class Roblox2(ShowBase):
         self.online_node = self._hud_text("online", 1.28, 0.885, 0.045, TextNode.ARight,
                                           (0.7, 0.9, 1.0, 1))
 
-        # Иконки оружий — три карточки низ-справа, активная выделяется
-        self._weapon_slots = {}  # weapon_key -> (bg_card, label_tn)
-        wdefs = [
-            ("syrup", "1", (0.35, 1.0, 0.45, 1),  AC.ICON_SYRUP_TEXTURE),
-            ("mayo",  "2", (0.97, 0.97, 0.78, 1), AC.ICON_MAYONEZ_TEXTURE),
-            ("hive",  "3", (1.0,  0.75, 0.1, 1),  AC.ICON_HONEY_TEXTURE),
-        ]
-        for i, (wkey, hotkey, col, icon_path) in enumerate(wdefs):
-            cx = 1.28 - i * 0.14
-            bg = self._hud_icon(cx, -0.78, (0.1, 0.1, 0.1, 0.55), size=0.058)
-            icon_tex = load_texture(self.loader, icon_path)
-            if icon_tex:
-                bg.setTexture(icon_tex, 1)
-                bg.setColor(1, 1, 1, 0.88)
-            tn_key = self._hud_text(f"wi_{wkey}_k", cx, -0.77, 0.028, TextNode.ACenter,
-                                    (0.6, 0.6, 0.6, 1))
-            tn_key.setText(hotkey)
-            tn_name = self._hud_text(f"wi_{wkey}_n", cx, -0.82, 0.024, TextNode.ACenter,
-                                     col)
-            short = {"syrup": "СИРОП", "mayo": "МАЙО", "hive": "ПЧЁЛЫ"}
-            tn_name.setText(short[wkey])
-            self._weapon_slots[wkey] = (bg, col)
+        # Иконка текущего оружия — одна большая карточка, низ-справа
+        _wix, _wiz = 1.21, -0.80
+        self._w_icon_bg = self._hud_icon(_wix, _wiz, (0.1, 0.1, 0.1, 0.65), size=0.095)
+        self._w_icon_textures = {
+            "syrup": load_texture(self.loader, AC.ICON_SYRUP_TEXTURE),
+            "mayo":  load_texture(self.loader, AC.ICON_MAYONEZ_TEXTURE),
+            "hive":  load_texture(self.loader, AC.ICON_HONEY_TEXTURE),
+        }
+        self._w_icon_colors = {
+            "syrup": (0.35, 1.0,  0.45, 1),
+            "mayo":  (0.97, 0.97, 0.78, 1),
+            "hive":  (1.0,  0.75, 0.1,  1),
+        }
+        self._w_label   = self._hud_text("w_name", _wix, _wiz - 0.115, 0.038,
+                                         TextNode.ACenter, (1, 1, 1, 1))
+        self._w_key_node = self._hud_text("w_key",  _wix, _wiz + 0.115, 0.030,
+                                          TextNode.ACenter, (0.6, 0.6, 0.6, 1))
+        self._w_prev = None
         # вспомогательный текст: LIT ENERGY / таймер / стаканы
-        self.weapon_node = self._hud_text("weapon_extra", 1.28, -0.90, 0.038,
+        self.weapon_node = self._hud_text("weapon_extra", 1.28, -0.96, 0.038,
                                           TextNode.ARight, (1, 1, 1, 1))
         # центральная подсказка: поставить стакан (появляется рядом с прицелом)
         self.cup_hint_node = self._hud_text("cup_hint", 0, -0.18, 0.048,
@@ -1522,6 +1554,20 @@ class Roblox2(ShowBase):
         self.vignette.setDepthTest(False)
         self.vignette.setDepthWrite(False)
         self.vignette.hide()
+
+        # красный вигнет по краям при получении урона
+        self._hurt_alpha = 0.0
+        hurt_tex = self._make_vignette_texture((0.95, 0.08, 0.08))
+        cm3 = CardMaker("hurt_vign")
+        cm3.setFrameFullscreenQuad()
+        self._hurt_vignette = self.render2d.attachNewNode(cm3.generate())
+        self._hurt_vignette.setTexture(hurt_tex)
+        self._hurt_vignette.setTransparency(TransparencyAttrib.MAlpha)
+        self._hurt_vignette.setColor(1, 1, 1, 0)
+        self._hurt_vignette.setBin("fixed", 42)
+        self._hurt_vignette.setDepthTest(False)
+        self._hurt_vignette.setDepthWrite(False)
+        self._hurt_vignette.hide()
 
         entry_kw = dict(
             text="", scale=0.05, command=self._send_chat,
@@ -1680,7 +1726,7 @@ class Roblox2(ShowBase):
         self._music.play()
 
     def _update_slit_music(self):
-        """Во время события щелей играет своя музыка: первые 20с — обычная тревога,
+        """Во время события щелей играет своя музыка: первые 15с — обычная тревога,
         последние SLIT_FINAL_PHASE секунд — финальная. После события — вернуть фон.
         BLACK KING имеет приоритет и не даёт переключить свою тему."""
         if self.black_king and self.bk_boss_info:
@@ -1780,7 +1826,12 @@ class Roblox2(ShowBase):
                 self._show_notice("Нужна LIT ENERGY  выбей её с тараканов", color=(0.9, 0.6, 0.1, 1), duration=2.5)
                 return
         if weapon != self.weapon:
-            self._play_oneshot(AC.SFX_WEAPON_SELECT, volume=0.7)
+            _sfx = {
+                "syrup": AC.SFX_WEAPON_SYRUP,
+                "mayo":  AC.SFX_WEAPON_MAYO,
+                "hive":  AC.SFX_WEAPON_HIVE,
+            }
+            self._play_oneshot(_sfx.get(weapon, AC.SFX_WEAPON_SELECT), volume=0.7)
         self.weapon = weapon
         names = {"syrup": "Распылитель сиропа", "mayo": "Майонезная пушка",
                  "hive": "Улей-пчёлы (LIT ENERGY)"}
@@ -2372,6 +2423,7 @@ class Roblox2(ShowBase):
                         and self._hurt_cd <= 0):
                     self._play_oneshot(AC.SFX_PLAYER_HURT)
                     self._hurt_cd = 0.5
+                    self._hurt_alpha = 0.75
                 self._prev_hp = hp
                 self.lit_energy = snap.get("lit", 0)
                 server_bee = snap.get("bees", 0.0)
@@ -3128,11 +3180,22 @@ class Roblox2(ShowBase):
         # Онлайн (верх-справа)
         self.online_node.setText(f"Онлайн: {online}")
 
-        # Иконки оружий — подсветить активный слот
-        for wkey, (bg_card, col) in self._weapon_slots.items():
-            active = (wkey == self.weapon)
-            bg_card.setColor(*(0.55, 0.95, 0.35, 0.85) if active else (0.1, 0.1, 0.1, 0.55))
-            bg_card.setScale(0.070 if active else 0.058)
+        # Единая иконка текущего оружия — обновлять только при смене
+        if self.weapon != self._w_prev:
+            self._w_prev = self.weapon
+            _wtex = self._w_icon_textures.get(self.weapon)
+            _wcol = self._w_icon_colors.get(self.weapon, (1, 1, 1, 1))
+            if _wtex:
+                self._w_icon_bg.setTexture(_wtex, 1)
+                self._w_icon_bg.setColor(1, 1, 1, 0.92)
+            else:
+                self._w_icon_bg.clearTexture()
+                self._w_icon_bg.setColor(*_wcol[:3], 0.72)
+            _wnames = {"syrup": "СИРОП", "mayo": "МАЙО", "hive": "ПЧЁЛЫ"}
+            _wkeys  = {"syrup": "[1]",   "mayo": "[2]",  "hive": "[3]"}
+            self._w_label.setText(_wnames.get(self.weapon, self.weapon.upper()))
+            self._w_label.setTextColor(*_wcol)
+            self._w_key_node.setText(_wkeys.get(self.weapon, ""))
 
         # доп. строка: LIT ENERGY / таймер пчёл / стаканы / ГАЗ
         gas = " +ГАЗ" if self.keys.get("gas", False) else ""

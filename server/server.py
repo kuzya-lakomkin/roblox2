@@ -32,6 +32,7 @@ class GameServer:
         self.world = World()
         self.clients = {}      # pid -> StreamWriter
         self._next_pid = 1
+        self._kicked = set()   # PIDs выгнанных за дублирующий вход (их выход не анонсируется)
 
     # --- рассылка ---
     def broadcast(self, msg: dict, exclude=None):
@@ -100,21 +101,49 @@ class GameServer:
                         auth = await self._validate_token(token)
                         if auth:
                             name = auth["nick"]
-                            print(f"    [auth OK] {name} (user_id={auth['user_id']})")
+                            user_id = auth["user_id"]
+                            print(f"    [auth OK] {name} (user_id={user_id})")
                         else:
                             # auth отключён или токен пуст — используем имя из пакета
                             name = str(msg.get("name") or name)[:20]
+                            user_id = None
+
+                        # Выгнать дублирующую сессию с тем же аккаунтом/именем
+                        for old_pid, old_pl in list(self.world.players.items()):
+                            is_dup = (
+                                (user_id is not None and old_pl.user_id == user_id)
+                                or (user_id is None and old_pl.name == name)
+                            )
+                            if is_dup:
+                                print(f"    [kick dup] {name} (old pid={old_pid})")
+                                self._kicked.add(old_pid)
+                                old_writer = self.clients.get(old_pid)
+                                if old_writer:
+                                    try:
+                                        old_writer.close()
+                                    except Exception:
+                                        pass
+                                old_removed = self.world.remove_player(old_pid)
+                                if old_removed:
+                                    await self._save_stats(
+                                        old_removed.user_id,
+                                        old_removed.kills_session,
+                                        self.world.wave,
+                                    )
+                                self.broadcast({"t": "chat", "name": "СЕРВЕР",
+                                                "msg": f"{name} переподключился"})
+                                break
 
                         pl = self.world.add_player(pid, name)
                         if auth:
-                            pl.user_id = auth["user_id"]
+                            pl.user_id = user_id
 
                         self.send(pid, {
                             "t": "welcome", "id": pid,
                             "world": {"size": C.WORLD_SIZE, "ant_count": C.ANT_COUNT},
                         })
                         self.broadcast({"t": "chat", "name": "СЕРВЕР",
-                                        "msg": f"{name} зашёл в игру"})
+                                        "msg": f"{name} зашёл в игру"}, exclude=pid)
                         joined = True
                     elif not joined:
                         continue
@@ -146,7 +175,10 @@ class GameServer:
             # сохраняем статистику в auth-сервер при выходе
             if pl:
                 await self._save_stats(pl.user_id, pl.kills_session, self.world.wave)
-            self.broadcast({"t": "chat", "name": "СЕРВЕР", "msg": f"{name} вышел"})
+            # не анонсируем выход игрока, которого выгнал новый вход с того же аккаунта
+            if pid not in self._kicked:
+                self.broadcast({"t": "chat", "name": "СЕРВЕР", "msg": f"{name} вышел"})
+            self._kicked.discard(pid)
             try:
                 writer.close()
             except Exception:

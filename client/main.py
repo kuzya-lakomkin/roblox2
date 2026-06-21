@@ -3147,7 +3147,7 @@ class Roblox2(ShowBase):
             bg_card.setScale(0.070 if active else 0.058)
 
         # доп. строка: LIT ENERGY / таймер пчёл / стаканы / ГАЗ
-        gas = " +ГАЗ" if _t.time() < self.gas_until else ""
+        gas = " +ГАЗ" if self.keys.get("gas", False) else ""
         extra_parts = []
         if self.bee_time > 0:
             extra_parts.append(f"ПЧЁЛЫ: {self.bee_time:.0f}с{gas}")

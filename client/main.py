@@ -2139,17 +2139,8 @@ class Roblox2(ShowBase):
             drop = msg.get("drop", "ресурс")
             if msg.get("by") == self.player_name:
                 if drop == "lit_energy":
-                    self._show_notice("LIT ENERGY подобран!  пчёлы активированы!",
+                    self._show_notice("LIT ENERGY подобран!  нажми [3] - активируй пчёл!",
                                       color=(0.4, 0.82, 1.0, 1))
-                    # Активируем пчёл напрямую: сервер уже выдал предмет,
-                    # поэтому не проверяем self.lit_energy (снапшот мог ещё не прийти)
-                    if self.bee_time <= 0:
-                        if self.net:
-                            self.net.send({"t": "use_lit"})
-                            self._pending_use_lit = True
-                        self.bee_time = C.BEE_WINDOW
-                        self._play_oneshot(AC.SFX_LIT_ENERGY, volume=0.9)
-                    self.weapon = "hive"
                 elif drop == "cup":
                     self._show_notice("СТАКАН подобран!  неси в угол карты  [R] - поставить",
                                       color=(1.0, 0.88, 0.45, 1))

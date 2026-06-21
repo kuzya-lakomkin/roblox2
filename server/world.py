@@ -142,11 +142,22 @@ class Ant:
             dx, dy = target.pos[0] - self.pos[0], target.pos[1] - self.pos[1]
             pdist = math.hypot(dx, dy)
             if elevated or pdist > C.ANT_SURROUND_RADIUS + 3.0:
-                d = nav.direction(self.pos[0], self.pos[1]) if nav else None
-                if d is None:
-                    n = pdist or 1.0
-                    d = (dx / n, dy / n)
-                self.dir = [d[0], d[1]]
+                # при лазании по стене → целиться в кольцо рядом с игроком, не прямо под него
+                is_climbing = (elevated
+                               and near_wall(self.pos[0], self.pos[1], _WALL_NEAR_RECTS))
+                if is_climbing:
+                    phi = (self.aid * 2.3999632) % (2 * math.pi)
+                    tx = target.pos[0] + math.cos(phi) * (C.ANT_SURROUND_RADIUS + 1.0)
+                    ty = target.pos[1] + math.sin(phi) * (C.ANT_SURROUND_RADIUS + 1.0)
+                    cdx, cdy = tx - self.pos[0], ty - self.pos[1]
+                    n = math.hypot(cdx, cdy) or 1.0
+                    self.dir = [cdx / n, cdy / n]
+                else:
+                    d = nav.direction(self.pos[0], self.pos[1]) if nav else None
+                    if d is None:
+                        n = pdist or 1.0
+                        d = (dx / n, dy / n)
+                    self.dir = [d[0], d[1]]
             else:
                 # свой угол на кольце (золотой угол по aid -> разные стороны)
                 ang = (self.aid * 2.3999632) % (2 * math.pi)
@@ -521,9 +532,9 @@ class Slit:
 
 class BKShot:
     """Фиолетовый лазерный выстрел BLACK KING (фаза 2)."""
-    __slots__ = ("bksid", "pos", "vel", "die_at")
+    __slots__ = ("bksid", "pos", "vel", "die_at", "grav")
 
-    def __init__(self, bksid, origin, target_pos, now):
+    def __init__(self, bksid, origin, target_pos, now, grav=0.10):
         self.bksid = bksid
         self.pos = list(origin)
         dx = target_pos[0] - origin[0]
@@ -533,11 +544,12 @@ class BKShot:
         s = C.BK_SHOT_SPEED
         self.vel = [dx / n * s, dy / n * s, dz / n * s]
         self.die_at = now + C.BK_SHOT_LIFETIME
+        self.grav = grav
 
     def update(self, dt):
         for i in range(3):
             self.pos[i] += self.vel[i] * dt
-        self.vel[2] += C.GRAVITY * dt * 0.10   # слабая гравитация (почти прямо)
+        self.vel[2] += C.GRAVITY * dt * self.grav
 
     def snapshot(self):
         return [self.bksid, round(self.pos[0], 2), round(self.pos[1], 2), round(self.pos[2], 2)]
@@ -1526,7 +1538,7 @@ class World:
                 # восстановить волну до той что была перед призывом
                 self.wave = max(0, self._pre_bk_wave - 1)
                 self._wave_pending = True
-                self.next_wave_at = now + 7.0   # кат-сцена wipe + буфер
+                self.next_wave_at = now + 10.0  # кат-сцена wipe + вспышка + пауза
                 self.next_slit_at = now + random.uniform(*C.SLIT_INTERVAL)
             else:
                 self.bk_minions.clear()
@@ -1621,18 +1633,20 @@ class World:
         ev_pos = [round(origin[0], 2), round(origin[1], 2), round(origin[2], 2)]
 
         if self.bk_boss.flying:
-            # режим полёта: очередь по кругу, направления вращаются вместе с боссом
+            # режим полёта: горизонтальная очередь по кругу, параллельно полу
+            # origin и target на одной высоте → vel[2]=0 → строго горизонтально
             self.bk_boss.shoot_at = now + C.BK_RAPID_FIRE_INTERVAL
-            base_angle = math.radians(self.bk_boss.h)  # угол вращения босса
-            target_z = LEVEL2_Z + C.PLAYER_HEIGHT * 0.5  # уровень игрока на 2-м этаже
+            base_angle = math.radians(self.bk_boss.h)
+            shot_z = LEVEL2_Z + C.PLAYER_HEIGHT * 0.5  # уровень игрока на 2-м этаже
+            fly_origin = [self.bk_boss.pos[0], self.bk_boss.pos[1], shot_z]
             for i in range(C.BK_RAPID_FIRE_DIRS):
                 angle = base_angle + 2 * math.pi * i / C.BK_RAPID_FIRE_DIRS
-                tpos = [origin[0] + math.cos(angle) * 25,
-                        origin[1] + math.sin(angle) * 25,
-                        target_z]  # пули летят к уровню 2-го этажа
+                tpos = [fly_origin[0] + math.cos(angle) * 25,
+                        fly_origin[1] + math.sin(angle) * 25,
+                        shot_z]  # same Z → горизонтальный полёт без гравитации
                 bksid = self._next_bk_shot_id
                 self._next_bk_shot_id += 1
-                self.bk_shots[bksid] = BKShot(bksid, origin, tpos, now)
+                self.bk_shots[bksid] = BKShot(bksid, fly_origin, tpos, now, grav=0.0)
         else:
             # наземный режим: прицельный выстрел в ближайшего
             self.bk_boss.shoot_at = now + C.BK_SHOOT_INTERVAL
@@ -1747,9 +1761,9 @@ class World:
             self.bk_cup_shots.clear()
             self.black_king = False
             self.cup_spots = [False] * len(CUP_SPOTS)
-            # волна стартует после кат-сцены смерти BK (5с) + буфер
+            # волна стартует после кат-сцены (5с) + вспышки (2.5с) + пауза (2.5с) = 10с
             self._wave_pending = True
-            self.next_wave_at = now + 7.0
+            self.next_wave_at = now + 10.0
 
     def _kill_bk_minion(self, mid, owner_id, now):
         m = self.bk_minions.pop(mid, None)

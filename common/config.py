@@ -135,13 +135,13 @@ EMOTES = ("flex", "wave", "dance")
 
 # --- BLACK KING (секретная финальная фаза: 4 стакана → призыв) ---
 BLACK_KING_HP = 1200
-BLACK_KING_SPEED = 11.0              # постоянная быстрая беготня по всей карте
+BLACK_KING_SPEED = 16.0              # постоянная быстрая беготня по всей карте
 BLACK_KING_WANDER_INTERVAL = (1.5, 3.5)  # интервал смены случайной точки бега
 BLACK_KING_VOICE_INTERVAL = (4.0, 9.0)   # как часто издаёт случайный звук
 BLACK_KING_MINION_HP = 1             # копия гибнет с 1 капли сиропа
 BLACK_KING_MINION_SPAWN_INTERVAL = 9.0  # как часто спавнит копии
 BLACK_KING_MINION_MAX = 8            # максимум копий одновременно
-BLACK_KING_MINION_SPEED = 10.0       # плавная скорость ходьбы (без рывков)
+BLACK_KING_MINION_SPEED = 14.0       # плавная скорость ходьбы (без рывков)
 BLACK_KING_MINION_HOP_INTERVAL = 0.5  # fallback (фактически прыгают при приземлении)
 BLACK_KING_MINION_HOP_VZ = 16.0     # высокий прыжок-попрыгунчик
 BLACK_KING_HOP_INTERVAL = 0.65      # сек между прыжками самого BLACK KING

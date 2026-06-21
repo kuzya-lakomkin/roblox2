@@ -553,6 +553,7 @@ class Roblox2(ShowBase):
         self._bk_death_t = 0.0      # таймер кат-сцены
         self._bk_death_node = None  # узел модели для погружения в пол
         self._bk_death_pos = (0.0, 0.0)  # позиция гибели
+        self._bk_filter_keep = False  # держать фильтр активным после конца кат-сцены (до вспышки)
         # анимация погружения при bk_wipe (игроки умерли во время BK)
         self._bk_wipe_sinking = []  # [(NodePath, x, y, z_start)]
         self._bk_wipe_t = 0.0
@@ -682,6 +683,7 @@ class Roblox2(ShowBase):
             self._bk_night_overlay.setColor(0.05, 0.0, 0.12, 0)
             self._bk_night_overlay.hide()
         self._bk_night_alpha = 0.0
+        self._bk_filter_keep = False
         for n in self.cup_spot_nodes:
             n.removeNode()
         self.cup_spot_nodes = []
@@ -2869,7 +2871,8 @@ class Roblox2(ShowBase):
         # фиксированная позиция у северного края центральной башни — всегда видна
         self._bk_death_pos = (0.0, -6.0)
         self.hud_root.hide()
-        # фиолетовый фильтр из BK-фазы должен остаться видимым в кат-сцене
+        # фиолетовый фильтр держим активным: кат-сцена + вспышка (через _bk_filter_keep)
+        self._bk_filter_keep = True
         self._bk_night_alpha = max(self._bk_night_alpha, 0.38)
         self._bk_night_overlay.setColor(0.05, 0.0, 0.12, self._bk_night_alpha)
         self._bk_night_overlay.show()
@@ -2916,10 +2919,13 @@ class Roblox2(ShowBase):
             self._bk_death_node = None
             self._flash_screen((1.0, 0.9, 0.0, 1), duration=2.0, hold=0.5)
             self._shake(1.2)
-            self._play_music(AC.MUSIC_PHASE1)
             self.hud_root.show()
-            # ночной фильтр гасится плавно — idle-ветка _update_bk_cutscene
-            # сама задержит alpha к 0 (black_king уже False после bk_defeated)
+            # музыка и фильтр меняются только ПОСЛЕ окончания вспышки (+2.5с)
+            def _bk_phase_end(task):
+                self._play_music(AC.MUSIC_PHASE1)
+                self._bk_filter_keep = False  # теперь idle-ветка плавно гасит фильтр
+                return task.done
+            self.taskMgr.doMethodLater(2.5, _bk_phase_end, "bk_death_phase_end")
 
     def _start_bk_wipe_sink(self, event_msg):
         """Анимация погружения при bk_wipe: BK и миньоны уходят под землю за 3с."""
@@ -2980,19 +2986,17 @@ class Roblox2(ShowBase):
         import math as _m
         import random as _r
 
-        # когда кат-сцена не идёт — плавно анимировать ночной фильтр
+        # когда спавн кат-сцена не идёт — плавно анимировать ночной фильтр
         if not self._bk_cutscene:
-            if self._bk_death_cs:
-                # во время death кат-сцены фильтр держим на уровне BK-фазы — не гасить раньше
+            # фильтр держится: активен BK, или death кат-сцена, или ещё идёт вспышка
+            keep = self.black_king or self._bk_death_cs or self._bk_filter_keep
+            target_a = 0.38 if keep else 0.0
+            self._bk_night_alpha += (target_a - self._bk_night_alpha) * min(1.0, 3.0 * dt)
+            if self._bk_night_alpha > 0.005:
+                self._bk_night_overlay.setColor(0.05, 0.0, 0.12, self._bk_night_alpha)
                 self._bk_night_overlay.show()
             else:
-                target_a = 0.38 if self.black_king else 0.0
-                self._bk_night_alpha += (target_a - self._bk_night_alpha) * min(1.0, 3.0 * dt)
-                if self._bk_night_alpha > 0.005:
-                    self._bk_night_overlay.setColor(0.05, 0.0, 0.12, self._bk_night_alpha)
-                    self._bk_night_overlay.show()
-                else:
-                    self._bk_night_overlay.hide()
+                self._bk_night_overlay.hide()
             return
 
         self._bk_cutscene_t += dt

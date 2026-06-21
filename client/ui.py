@@ -5,7 +5,8 @@
 
 from direct.gui import DirectGuiGlobals as DGG
 from direct.gui.DirectGui import (DirectButton, DirectCheckButton, DirectEntry,
-                                  DirectFrame, DirectLabel, DirectOptionMenu)
+                                  DirectFrame, DirectLabel, DirectOptionMenu,
+                                  DirectSlider)
 from direct.interval.LerpInterval import (LerpColorScaleInterval,
                                           LerpScaleInterval)
 from direct.interval.MetaInterval import Parallel
@@ -467,42 +468,101 @@ class PauseMenu(Screen):
 # ── Настройки ────────────────────────────────────────────────────────────────
 
 class SettingsMenu(Screen):
-    """Настройки: разрешение, полный экран, управление."""
+    """Настройки: разрешение, полный экран, громкость, управление, разлогин."""
 
     def __init__(self, app):
-        super().__init__(app, panel=(-0.56, 0.56, -0.72, 0.74))
-        self._title("НАСТРОЙКИ", y=0.62)
+        super().__init__(app, panel=(-0.58, 0.58, -0.86, 0.78))
+        self._title("НАСТРОЙКИ", y=0.64)
 
-        DirectLabel(parent=self.root, text="Разрешение:", scale=0.055,
-                    pos=(-0.50, 0, 0.36), frameColor=(0, 0, 0, 0),
+        # --- разрешение ---
+        DirectLabel(parent=self.root, text="Разрешение:", scale=0.050,
+                    pos=(-0.52, 0, 0.44), frameColor=(0, 0, 0, 0),
                     text_fg=TEXT, text_align=0, **_kw(self.font_ui))
         self.res_menu = DirectOptionMenu(
-            parent=self.root, scale=0.065, pos=(0.05, 0, 0.36),
+            parent=self.root, scale=0.058, pos=(0.05, 0, 0.44),
             items=RESOLUTIONS, initialitem=0, highlightColor=BTN_HI,
             frameColor=BTN, text_fg=TEXT, relief="flat",
             popupMarker_scale=0.5, **_kw(self.font_ui),
         )
 
-        DirectLabel(parent=self.root, text="Полный экран:", scale=0.055,
-                    pos=(-0.50, 0, 0.20), frameColor=(0, 0, 0, 0),
+        # --- полный экран ---
+        DirectLabel(parent=self.root, text="Полный экран:", scale=0.050,
+                    pos=(-0.52, 0, 0.28), frameColor=(0, 0, 0, 0),
                     text_fg=TEXT, text_align=0, **_kw(self.font_ui))
         self.fs_check = DirectCheckButton(
-            parent=self.root, scale=0.065, pos=(0.05, 0, 0.20),
+            parent=self.root, scale=0.058, pos=(0.05, 0, 0.28),
             boxPlacement="right", frameColor=BTN, text_fg=TEXT,
             command=self._noop, **_kw(self.font_ui),
         )
 
-        self._button("Управление", 0.02, app.open_keybindings, hw=0.36, hh=0.052)
-        self._button("Применить",  -0.12, self._apply, hw=0.36, hh=0.052)
-        self._button("Назад",      -0.24, app.close_settings, hw=0.36, hh=0.052)
+        # --- громкость музыки ---
+        DirectLabel(parent=self.root, text="Музыка:", scale=0.048,
+                    pos=(-0.52, 0, 0.12), frameColor=(0, 0, 0, 0),
+                    text_fg=ACCENT, text_align=0, **_kw(self.font_ui))
+        self.music_slider = DirectSlider(
+            parent=self.root, range=(0, 100),
+            value=int(app._music_vol * 100),
+            pageSize=5, pos=(0.12, 0, 0.12), scale=0.30,
+            frameColor=(0.20, 0.16, 0.08, 0.80),
+            thumb_frameColor=ACCENT,
+            command=self._on_music_slider,
+        )
+        self._music_val_lbl = DirectLabel(
+            parent=self.root, text=f"{int(app._music_vol*100)}%",
+            scale=0.045, pos=(0.48, 0, 0.12),
+            frameColor=(0, 0, 0, 0), text_fg=TEXT, **_kw(self.font_ui))
+
+        # --- громкость звуков ---
+        DirectLabel(parent=self.root, text="Звуки:", scale=0.048,
+                    pos=(-0.52, 0, -0.04), frameColor=(0, 0, 0, 0),
+                    text_fg=ACCENT, text_align=0, **_kw(self.font_ui))
+        self.sfx_slider = DirectSlider(
+            parent=self.root, range=(0, 100),
+            value=int(app._sfx_vol * 100),
+            pageSize=5, pos=(0.12, 0, -0.04), scale=0.30,
+            frameColor=(0.20, 0.16, 0.08, 0.80),
+            thumb_frameColor=ACCENT,
+            command=self._on_sfx_slider,
+        )
+        self._sfx_val_lbl = DirectLabel(
+            parent=self.root, text=f"{int(app._sfx_vol*100)}%",
+            scale=0.045, pos=(0.48, 0, -0.04),
+            frameColor=(0, 0, 0, 0), text_fg=TEXT, **_kw(self.font_ui))
+
+        # --- кнопки ---
+        self._button("Управление", -0.22, app.open_keybindings, hw=0.38, hh=0.050)
+        self._button("Применить",  -0.36, self._apply,           hw=0.38, hh=0.050)
+
+        from common import config as _cfg
+        if getattr(_cfg, "AUTH_ENABLED", False):
+            self._button("Выйти из аккаунта", -0.52, app.do_logout, hw=0.38, hh=0.050)
+            self._button("Назад", -0.66, app.close_settings, hw=0.38, hh=0.050)
+        else:
+            self._button("Назад", -0.52, app.close_settings, hw=0.38, hh=0.050)
 
     def _noop(self, *_):
         pass
+
+    def _on_music_slider(self):
+        v = int(self.music_slider["value"])
+        self._music_val_lbl["text"] = f"{v}%"
+        self.app._music_vol = v / 100.0
+        if self.app._music and hasattr(self.app._music, "setVolume"):
+            self.app._music.setVolume(self.app._music_vol)
+
+    def _on_sfx_slider(self):
+        v = int(self.sfx_slider["value"])
+        self._sfx_val_lbl["text"] = f"{v}%"
+        self.app._sfx_vol = v / 100.0
 
     def _apply(self):
         w, h = (int(v) for v in self.res_menu.get().split("x"))
         fullscreen = bool(self.fs_check["indicatorValue"])
         self.app.apply_video_settings(w, h, fullscreen)
+        self.app.apply_audio_settings(
+            self.music_slider["value"] / 100.0,
+            self.sfx_slider["value"] / 100.0,
+        )
 
 
 # ── Экран входа / регистрации ─────────────────────────────────────────────────

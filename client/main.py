@@ -306,11 +306,15 @@ class Roblox2(ShowBase):
         self.port = port
         self.auth_token = ""           # JWT/token от auth-сервера
         self._auth_server = auth_server or C.AUTH_SERVER_URL.replace("http://", "")
-        # загрузить настройки (биндинги + последний auth_server)
+        # загрузить настройки
         settings = self._load_settings()
         self.key_bindings = settings["keybindings"]
         if settings.get("auth_server"):
             self._auth_server = settings["auth_server"]
+        self._saved_login    = settings.get("saved_login", "")
+        self._saved_password = settings.get("saved_password", "")
+        self._music_vol = float(settings.get("music_vol", 0.5))
+        self._sfx_vol   = float(settings.get("sfx_vol",   1.0))
         self.my_id = None
         self.net = None
         self.world_built = False         # игровое состояние (HUD/ввод/частицы) построено
@@ -367,6 +371,11 @@ class Roblox2(ShowBase):
         # Показываем экран входа (AUTH). Если авторизация отключена — сразу HUB.
         if not C.AUTH_ENABLED:
             self._enter_hub()
+        elif self._saved_login and self._saved_password:
+            # есть сохранённые данные — пробуем войти автоматически
+            self._set_menu_blur(True)
+            self._play_music(AC.MUSIC_HUB)
+            self.taskMgr.doMethodLater(0.05, self._auto_login_task, "auto_login")
         else:
             self.login_screen.show()
             self._set_menu_blur(True)
@@ -379,11 +388,14 @@ class Roblox2(ShowBase):
         defaults = {
             "keybindings": dict(DEFAULT_BINDINGS),
             "auth_server": C.AUTH_SERVER_URL.replace("http://", ""),
+            "saved_login": "",
+            "saved_password": "",
+            "music_vol": 0.5,
+            "sfx_vol": 1.0,
         }
         try:
             with open(path, encoding="utf-8") as f:
                 saved = _json_mod.load(f)
-            # обновляем поверхностно — старые ключи остаются, новые мержатся
             if "keybindings" in saved:
                 merged = dict(DEFAULT_BINDINGS)
                 merged.update(saved["keybindings"])
@@ -401,11 +413,50 @@ class Roblox2(ShowBase):
                 _json_mod.dump({
                     "keybindings": self.key_bindings,
                     "auth_server": self._auth_server,
+                    "saved_login": self._saved_login,
+                    "saved_password": self._saved_password,
+                    "music_vol": self._music_vol,
+                    "sfx_vol": self._sfx_vol,
                 }, f, indent=2, ensure_ascii=False)
         except Exception:
             pass
 
     # ---------- авторизация --------------------------------------------------------
+    def _auto_login_task(self, task):
+        """Фоновая попытка автоматического входа с сохранёнными данными."""
+        result = _http_post(
+            f"http://{self._auth_server}/login",
+            {"login": self._saved_login, "password": self._saved_password},
+        )
+        if result.get("ok"):
+            self.auth_token  = result.get("token", "")
+            self.player_name = result.get("nick", self._saved_login)
+            self.main_menu.set_nick(self.player_name)
+            self._enter_hub()
+        else:
+            # токен устарел или сервер недоступен — показать экран входа
+            self.login_screen.show()
+        return task.done
+
+    def do_logout(self):
+        """Разлогин: стереть сохранённые данные и вернуться на экран входа."""
+        self._saved_login = ""
+        self._saved_password = ""
+        self.auth_token = ""
+        self._save_settings()
+        self.goto_hub()        # сначала сброс состояния игры
+        self._hide_all_screens()
+        self.login_screen.show()
+        self._set_menu_blur(True)
+
+    def apply_audio_settings(self, music_vol: float, sfx_vol: float):
+        """Применить уровни громкости (0.0–1.0) и сохранить."""
+        self._music_vol = max(0.0, min(1.0, music_vol))
+        self._sfx_vol   = max(0.0, min(1.0, sfx_vol))
+        if self._music and hasattr(self._music, "setVolume"):
+            self._music.setVolume(self._music_vol)
+        self._save_settings()
+
     def _enter_hub(self):
         """Перейти в хаб после успешной авторизации (или при AUTH_ENABLED=False)."""
         self.state = "HUB"
@@ -421,6 +472,8 @@ class Roblox2(ShowBase):
         if result.get("ok"):
             self.auth_token  = result.get("token", "")
             self.player_name = result.get("nick", login)
+            self._saved_login    = login
+            self._saved_password = password
             self._save_settings()
             self.main_menu.set_nick(self.player_name)
             self._enter_hub()
@@ -1539,7 +1592,7 @@ class Roblox2(ShowBase):
     def _play_oneshot(self, path, volume=1.0, rate=1.0):
         snd = load_sound(self.loader, path, loop=False)
         if snd:
-            snd.setVolume(volume)
+            snd.setVolume(volume * self._sfx_vol)
             snd.setPlayRate(rate)   # питч/скорость (для рандомного питча)
             snd.play()
 
@@ -1560,7 +1613,7 @@ class Roblox2(ShowBase):
             self._music.stop()
         self._music = new
         self._music_path = path
-        self._music.setVolume(0.5)
+        self._music.setVolume(self._music_vol)
         self._music.play()
 
     def _update_slit_music(self):

@@ -269,7 +269,7 @@ class Boss:
     def phase(self):
         return 2 if self.respect >= C.BOSS_RESPECT_MAX * C.BOSS_PHASE2_FRAC else 1
 
-    def update(self, dt, now, players, frozen, nav=None):
+    def update(self, dt, now, players, frozen, nav=None, shots=None):
         if frozen:
             return
         target = _nearest_player(players, self.pos, 9999)   # всегда к ближайшему
@@ -283,8 +283,36 @@ class Boss:
             self.dir = [nd[0], nd[1]]
             fdx, fdy = target.pos[0] - self.pos[0], target.pos[1] - self.pos[1]
             self.h = math.degrees(math.atan2(-fdx, fdy))    # лицом прямо к игроку
-        nx = self.pos[0] + self.dir[0] * C.BOSS_SPEED * dt
-        ny = self.pos[1] + self.dir[1] * C.BOSS_SPEED * dt
+
+        # уворот: если снаряд летит рядом — стрейфим перпендикулярно
+        dodge_x, dodge_y = 0.0, 0.0
+        if shots:
+            for sh in shots.values():
+                if sh.kind != "syrup":
+                    continue
+                dx = self.pos[0] - sh.pos[0]
+                dy = self.pos[1] - sh.pos[1]
+                dist = math.hypot(dx, dy)
+                if dist < C.BOSS_DODGE_RANGE and dist > 0.1:
+                    # снаряд летит к боссу?
+                    vn = math.hypot(sh.vel[0], sh.vel[1]) or 1.0
+                    approach = -(sh.vel[0] * dx + sh.vel[1] * dy) / (vn * dist)
+                    if approach > 0.3:
+                        # перпендикуляр влево/вправо (выбираем сторону по id снаряда)
+                        side = 1 if sh.sid % 2 == 0 else -1
+                        dodge_x += -sh.vel[1] / vn * side
+                        dodge_y +=  sh.vel[0] / vn * side
+            dn = math.hypot(dodge_x, dodge_y)
+            if dn > 0.01:
+                dodge_x /= dn; dodge_y /= dn
+
+        move_x = self.dir[0] + dodge_x * 1.6
+        move_y = self.dir[1] + dodge_y * 1.6
+        mn = math.hypot(move_x, move_y) or 1.0
+        move_x /= mn; move_y /= mn
+
+        nx = self.pos[0] + move_x * C.BOSS_SPEED * dt
+        ny = self.pos[1] + move_y * C.BOSS_SPEED * dt
         if not in_any_building(nx, ny, _BUILDING_RECTS):
             self.pos[0], self.pos[1] = nx, ny
         elif not in_any_building(nx, self.pos[1], _BUILDING_RECTS):
@@ -711,13 +739,12 @@ class BlackKingMinion:
         elif not in_any_building(self.pos[0], ny, _BUILDING_RECTS):
             self.pos[1] = ny
         self.pos[0], self.pos[1] = _clamp_to_arena(self.pos[0], self.pos[1])
-        # косметический прыжок (только вертикаль, не влияет на горизонталь)
-        if now >= self.hop_at and self.pos[2] <= 0.02:
-            self.vz = C.BLACK_KING_MINION_HOP_VZ
-            self.hop_at = now + C.BLACK_KING_MINION_HOP_INTERVAL
-        # физика Z
+        # попрыгунчик: отскок при каждом касании земли
         self.vz += C.GRAVITY * dt
         self.pos[2] = max(0.0, self.pos[2] + self.vz * dt)
+        if self.pos[2] <= 0.001 and self.vz <= 0:
+            self.vz = C.BLACK_KING_MINION_HOP_VZ
+            self.hop_at = now + C.BLACK_KING_MINION_HOP_INTERVAL
         if self.pos[2] <= 0.0:
             self.vz = 0.0
 
@@ -959,7 +986,7 @@ class World:
         if not frozen:
             self._neon_ant_shoot(now)
         if self.boss:
-            self.boss.update(dt, now, self.players, frozen, self.nav)
+            self.boss.update(dt, now, self.players, frozen, self.nav, self.shots)
             if not frozen:
                 self._boss_throw(now)
                 self._boss_gas(now)
@@ -1033,9 +1060,11 @@ class World:
                     self._hurt_bk_boss(C.PROJECTILE_DAMAGE, shot.owner, now)
                     hit = True
             # маленькие копии BLACK KING — 1 капля сиропа убивает
+            # XY-проверка: миньоны прыгают, z меняется — не должно влиять на попадание
             if not hit and self.bk_minions and shot.kind == C.WEAPON_SYRUP:
                 for mid, m in list(self.bk_minions.items()):
-                    if _dist2(shot.pos, m.pos) < (C.PROJECTILE_RADIUS + 0.5) ** 2:
+                    xy2 = (shot.pos[0]-m.pos[0])**2 + (shot.pos[1]-m.pos[1])**2
+                    if xy2 < (C.PROJECTILE_RADIUS + 0.7) ** 2:
                         self._kill_bk_minion(mid, shot.owner, now)
                         hit = True
                         break

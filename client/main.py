@@ -346,7 +346,6 @@ class Roblox2(ShowBase):
 
         # бой
         self.weapon = "syrup"
-        self.gas_until = 0.0
         self.camera_mode = "first"   # вход от первого лица (C — переключить на 3-е)
 
         # экраны интерфейса
@@ -554,6 +553,7 @@ class Roblox2(ShowBase):
         self._bk_death_node = None  # узел модели для погружения в пол
         self._bk_death_pos = (0.0, 0.0)  # позиция гибели
         self._bk_filter_keep = False  # держать фильтр активным после конца кат-сцены (до вспышки)
+        self._pending_use_lit = False  # use_lit отправлен, ждём подтверждения сервера
         # анимация погружения при bk_wipe (игроки умерли во время BK)
         self._bk_wipe_sinking = []  # [(NodePath, x, y, z_start)]
         self._bk_wipe_t = 0.0
@@ -1014,6 +1014,12 @@ class Roblox2(ShowBase):
                 return
             elif kind == 'pickup':
                 self._play_oneshot(AC.SFX_PICKUP, volume=1.0)
+                if ev.get('drop') == 'lit_energy' and self.bee_time <= 0:
+                    # автовыбор пчёл сразу при подборе (как в онлайн-режиме)
+                    w.use_lit_energy(1)
+                    self.bee_time = C.BEE_WINDOW
+                    self.weapon = "hive"
+                    self._play_oneshot(AC.SFX_LIT_ENERGY, volume=0.9)
         w.events.clear()
         step_key = (self._tut_steps[self._tut_step][0]
                     if self._tut_step < len(self._tut_steps) else '_done')
@@ -1327,7 +1333,9 @@ class Roblox2(ShowBase):
         self.accept(kb.get("weapon1", "1"), self._set_weapon, ["syrup"])
         self.accept(kb.get("weapon2", "2"), self._set_weapon, ["mayo"])
         self.accept(kb.get("weapon3", "3"), self._set_weapon, ["hive"])
-        self.accept(kb.get("gas",  "lshift"), self._gas)
+        gas_key = kb.get("gas", "lshift")
+        self.accept(gas_key,          self._set_key, ["gas", True])
+        self.accept(gas_key + "-up",  self._set_key, ["gas", False])
         self.accept(kb.get("ult",  "q"),      self._ultimate)
         self.accept(kb.get("place_cup", "r"), self._place_cup)
         self.accept(kb.get("camera", "c"),    self._toggle_camera)
@@ -1767,6 +1775,7 @@ class Roblox2(ShowBase):
                     self._tut_world.use_lit_energy(1)
                 elif self.net:
                     self.net.send({"t": "use_lit"})
+                    self._pending_use_lit = True  # защита: снапшот с bees=0 не откатит оружие
                 self.bee_time = C.BEE_WINDOW
                 self._show_notice("LIT ENERGY потрачено  пчёлы активны!", color=(0.4, 0.82, 1.0, 1), duration=2.5)
                 self._play_oneshot(AC.SFX_LIT_ENERGY, volume=0.9)
@@ -1786,12 +1795,6 @@ class Roblox2(ShowBase):
                 self._stop_spray_sound()
             else:
                 self._start_spray_sound()   # сменить луп на нужную жидкость
-
-    def _gas(self):
-        if self.state not in ("COMBAT", "TUTORIAL") or self.chat_active:
-            return
-        import time as _t
-        self.gas_until = _t.time() + C.GAS_DURATION
 
     def _ultimate(self):
         if self.state != "COMBAT" or self.chat_active or self.is_dead or not self.net:
@@ -2001,8 +2004,10 @@ class Roblox2(ShowBase):
             if move.lengthSquared() > 0:
                 move.normalize()
 
-        import time as _t
-        speed = C.PLAYER_SPEED * (C.GAS_MULT if _t.time() < self.gas_until else 1.0)
+        gas_held = (self.keys.get("gas", False)
+                    and self.state in ("COMBAT", "TUTORIAL")
+                    and not self.chat_active)
+        speed = C.PLAYER_SPEED * (C.GAS_MULT if gas_held else 1.0)
         if self.player_slow > 0:        # газ босса замедляет
             speed *= C.BOSS_GAS_SLOW_FACTOR
         self.pos.x += move.x * speed * dt
@@ -2139,7 +2144,15 @@ class Roblox2(ShowBase):
                 if drop == "lit_energy":
                     self._show_notice("LIT ENERGY подобран!  пчёлы активированы!",
                                       color=(0.4, 0.82, 1.0, 1))
-                    self._set_weapon("hive")  # сразу переключиться на улей
+                    # Активируем пчёл напрямую: сервер уже выдал предмет,
+                    # поэтому не проверяем self.lit_energy (снапшот мог ещё не прийти)
+                    if self.bee_time <= 0:
+                        if self.net:
+                            self.net.send({"t": "use_lit"})
+                            self._pending_use_lit = True
+                        self.bee_time = C.BEE_WINDOW
+                        self._play_oneshot(AC.SFX_LIT_ENERGY, volume=0.9)
+                    self.weapon = "hive"
                 elif drop == "cup":
                     self._show_notice("СТАКАН подобран!  неси в угол карты  [R] - поставить",
                                       color=(1.0, 0.88, 0.45, 1))
@@ -2152,7 +2165,7 @@ class Roblox2(ShowBase):
             if msg.get("by") == self.player_name:
                 self._show_notice(f"ПЧЁЛЫ АКТИВНЫ  {int(msg.get('time', 12))}с!",
                                   color=(0.4, 0.82, 1.0, 1), duration=2.5)
-                self._play_oneshot(AC.SFX_LIT_ENERGY)
+                # SFX_LIT_ENERGY уже сыгран в _set_weapon — не дублировать
         elif kind == "cup_placed":
             self._show_notice(f"Стакан поставлен  {msg.get('count', '?')}/4",
                               color=(1.0, 0.88, 0.45, 1), duration=2.5)
@@ -2373,11 +2386,14 @@ class Roblox2(ShowBase):
                     self._hurt_cd = 0.5
                 self._prev_hp = hp
                 self.lit_energy = snap.get("lit", 0)
-                self.bee_time = snap.get("bees", 0.0)
+                server_bee = snap.get("bees", 0.0)
+                if server_bee > 0:
+                    self._pending_use_lit = False  # сервер подтвердил активацию пчёл
+                self.bee_time = server_bee
                 self.player_slow = snap.get("slow", 0.0)
                 self.cups = snap.get("cups", 0)
-                # пчёлы кончились — вернуть струю сиропа
-                if self.weapon == "hive" and self.bee_time <= 0:
+                # пчёлы кончились — вернуть сироп (но не если ждём подтверждения от сервера)
+                if self.weapon == "hive" and self.bee_time <= 0 and not self._pending_use_lit:
                     self.weapon = "syrup"
                 continue
             seen.add(pid)

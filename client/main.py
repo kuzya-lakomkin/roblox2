@@ -759,6 +759,8 @@ class Roblox2(ShowBase):
             self.death_overlay.hide()
             self._hurt_alpha = 0.0
             self._hurt_vignette.hide()
+            self._bee_vignette.hide()
+            self._bee_vign_t = 0.0
         # мгновенно убрать все уведомления
         for _entry in getattr(self, '_notices', []):
             try: _entry[0].removeNode()
@@ -1231,6 +1233,15 @@ class Roblox2(ShowBase):
             self._hurt_vignette.setColor(1, 1, 1, self._hurt_alpha)
         else:
             self._hurt_vignette.hide()
+        # голубой пульсирующий вигнет пока активен LIT ENERGY
+        if self.bee_time > 0:
+            self._bee_vign_t += dt
+            pulse = 0.22 + 0.10 * math.sin(self._bee_vign_t * 3.5)
+            self._bee_vignette.show()
+            self._bee_vignette.setColor(1, 1, 1, pulse)
+        else:
+            self._bee_vignette.hide()
+            self._bee_vign_t = 0.0
 
     def _apply_blast_knockback(self, pos):
         """Отброс ЛОКАЛЬНОГО игрока от взрыва босса (игрок авторитетен над позицией)."""
@@ -1579,6 +1590,20 @@ class Roblox2(ShowBase):
         self._hurt_vignette.setDepthWrite(False)
         self._hurt_vignette.hide()
 
+        # голубой вигнет по краям пока активен LIT ENERGY (пчёлы)
+        bee_tex = self._make_vignette_texture((0.10, 0.72, 1.0))
+        cm4 = CardMaker("bee_vign")
+        cm4.setFrameFullscreenQuad()
+        self._bee_vignette = self.render2d.attachNewNode(cm4.generate())
+        self._bee_vignette.setTexture(bee_tex)
+        self._bee_vignette.setTransparency(TransparencyAttrib.MAlpha)
+        self._bee_vignette.setColor(1, 1, 1, 0)
+        self._bee_vignette.setBin("fixed", 41)
+        self._bee_vignette.setDepthTest(False)
+        self._bee_vignette.setDepthWrite(False)
+        self._bee_vignette.hide()
+        self._bee_vign_t = 0.0
+
         entry_kw = dict(
             text="", scale=0.05, command=self._send_chat,
             width=30, focusInCommand=lambda: None, parent=self.hud_root,
@@ -1670,11 +1695,21 @@ class Roblox2(ShowBase):
         if not self._can_fire():
             return
         if self.weapon == "hive":
-            # попытка выстрела автоматически активирует LIT ENERGY (если ещё не активно)
             if self.bee_time <= 0:
-                self._set_weapon("hive")   # активация: проверит lit_energy и покажет ошибку
-            if self.bee_time <= 0:         # активация не удалась — не стрелять
-                return
+                # первый выстрел — активация LIT ENERGY
+                if self.lit_energy <= 0:
+                    self._show_notice("Нужна LIT ENERGY  выбей её с тараканов",
+                                      color=(0.9, 0.6, 0.1, 1), duration=2.5)
+                    return
+                if self.state == "TUTORIAL" and hasattr(self, "_tut_world") and self._tut_world:
+                    self._tut_world.use_lit_energy(1)
+                elif self.net:
+                    self.net.send({"t": "use_lit"})
+                    self._pending_use_lit = True
+                self.bee_time = C.BEE_WINDOW
+                self._show_notice("LIT ENERGY потрачено  пчёлы активны!",
+                                  color=(0.4, 0.82, 1.0, 1), duration=2.5)
+                self._play_oneshot(AC.SFX_LIT_ENERGY, volume=0.9)
             self._emit_projectile()
             return
         self.firing = True                     # сироп/майонез - струя при зажатии
@@ -1826,20 +1861,10 @@ class Roblox2(ShowBase):
     def _set_weapon(self, weapon):
         if self.state not in ("COMBAT", "TUTORIAL"):
             return
-        # пчёлы (улей) — не постоянное оружие: нужен активный запас LIT ENERGY
-        if weapon == "hive" and self.bee_time <= 0:
-            if self.lit_energy > 0:
-                if self.state == "TUTORIAL" and hasattr(self, "_tut_world") and self._tut_world:
-                    self._tut_world.use_lit_energy(1)
-                elif self.net:
-                    self.net.send({"t": "use_lit"})
-                    self._pending_use_lit = True  # защита: снапшот с bees=0 не откатит оружие
-                self.bee_time = C.BEE_WINDOW
-                self._show_notice("LIT ENERGY потрачено  пчёлы активны!", color=(0.4, 0.82, 1.0, 1), duration=2.5)
-                self._play_oneshot(AC.SFX_LIT_ENERGY, volume=0.9)
-            else:
-                self._show_notice("Нужна LIT ENERGY  выбей её с тараканов", color=(0.9, 0.6, 0.1, 1), duration=2.5)
-                return
+        # пчёлы (улей) — доступны только если есть LIT ENERGY или уже активны
+        if weapon == "hive" and self.bee_time <= 0 and self.lit_energy <= 0:
+            self._show_notice("Нужна LIT ENERGY  выбей её с тараканов", color=(0.9, 0.6, 0.1, 1), duration=2.5)
+            return
         if weapon != self.weapon:
             _sfx = {
                 "syrup": AC.SFX_WEAPON_SYRUP,

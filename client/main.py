@@ -759,6 +759,11 @@ class Roblox2(ShowBase):
             self.death_overlay.hide()
             self._hurt_alpha = 0.0
             self._hurt_vignette.hide()
+        # мгновенно убрать все уведомления
+        for _entry in getattr(self, '_notices', []):
+            try: _entry[0].removeNode()
+            except Exception: pass
+        self._notices = []
         # очистить туториал
         for attr in ("_tut_overlay", "_tut_black"):
             node = getattr(self, attr, None)
@@ -1917,6 +1922,7 @@ class Roblox2(ShowBase):
                     self._move(dt)
                 self._apply_camera(dt)
                 self._update_overlays(dt)
+                self._update_notices(dt)
                 self._update_hud()
                 self._tut_update(dt)
                 return Task.cont

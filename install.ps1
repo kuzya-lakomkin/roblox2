@@ -115,15 +115,13 @@ Write-Host "[OK]   Git: $gitExe" -ForegroundColor Green
 # ---------- 3. Clone / update repository ----------
 Write-Host "[3/5] Downloading game files..." -ForegroundColor Yellow
 
-# Force HTTPS even if user git config has SSH insteadOf rules
-$gitHttps = @("-c", "url.$REPO_URL.insteadOf=$REPO_URL")
-
 $gitDir = Join-Path $INSTALL_DIR ".git"
 if (Test-Path $gitDir) {
     Write-Host "      Folder exists - running git pull..." -ForegroundColor Gray
-    & $gitExe @gitHttps -C $INSTALL_DIR pull --ff-only
+    & $gitExe -C $INSTALL_DIR fetch --depth=1 origin 2>&1
+    & $gitExe -C $INSTALL_DIR reset --hard origin/HEAD 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "      [!] git pull failed - continuing with existing files." -ForegroundColor Yellow
+        Write-Host "      [!] git update failed - continuing with existing files." -ForegroundColor Yellow
     } else {
         Write-Host "[OK]   Updated." -ForegroundColor Green
     }
@@ -131,8 +129,9 @@ if (Test-Path $gitDir) {
     if (Test-Path $INSTALL_DIR) {
         Remove-Item $INSTALL_DIR -Recurse -Force
     }
-    Write-Host "      Cloning $REPO_URL to $INSTALL_DIR ..." -ForegroundColor Gray
-    & $gitExe @gitHttps clone $REPO_URL $INSTALL_DIR
+    Write-Host "      Cloning $REPO_URL ..." -ForegroundColor Gray
+    Write-Host "      (downloading game files, please wait)" -ForegroundColor Gray
+    & $gitExe clone --depth 1 --single-branch --no-tags --progress $REPO_URL $INSTALL_DIR
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[ERROR] git clone failed." -ForegroundColor Red
         Read-Host "Press Enter to exit"

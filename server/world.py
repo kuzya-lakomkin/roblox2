@@ -1529,6 +1529,15 @@ class World:
             self.slits = {}
             self.slit_event_active = False
 
+            # сброс инвентарей всех игроков при любом вайпе
+            for _pl in self.players.values():
+                _pl.lit_energy = 0
+                _pl.cups = 0
+            # очистить предметы на земле
+            self.drops.clear()
+            # сбросить установленные стойки
+            self.cup_spots = [False] * len(CUP_SPOTS)
+
             if self.black_king:
                 # погружение: собрать позиции BK и миньонов для анимации
                 bk_pos = ([round(self.bk_boss.pos[0], 2), round(self.bk_boss.pos[1], 2)]
@@ -1544,7 +1553,6 @@ class World:
                 self.bk_living_cups.clear()
                 self.bk_cup_shots.clear()
                 self.black_king = False
-                self.cup_spots = [False] * len(CUP_SPOTS)
                 # восстановить волну до той что была перед призывом
                 self.wave = max(0, self._pre_bk_wave - 1)
                 self._wave_pending = True

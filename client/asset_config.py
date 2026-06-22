@@ -70,6 +70,9 @@ SHOWCASE_TEXTURES = [
 # Текстура настенного врага «ЩЕЛЬ» (натягивается на два прижатых шара).
 # Положи файл assets/textures/slit.png. Нет файла -> шахматка «missing».
 SLIT_TEXTURE = _t("slit.png")
+# Текстура лица ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО: положи assets/textures/wormchello_face.png
+# Центр картинки = центр лица (нос). Если файла нет — голова без текстуры.
+WORMCHELLO_FACE_TEXTURE = _t("wormchello_face.png")
 PLAYER_BASE_TEXTURE = _t("player_base.png")
 COCKROACH_TEXTURE = _t("cockroach.png")
 BOSS_TEXTURE = _t("boss_papanya.png")
@@ -149,6 +152,15 @@ MUSIC_BOSS = _s("music_boss.wav")         # фон битвы с Папаней
 MUSIC_SLIT = _s("music_slit.wav")         # событие ЩЕЛИ — первые 20 секунд
 MUSIC_SLIT_FINAL = _s("music_slit_final.wav")  # последние 10 секунд (тревога)
 MUSIC_BLACK_KING = _s("music_black_king.wav")   # тема финальной фазы BLACK KING
+MUSIC_WORMCHELLO = _s("music_wormchello.wav")  # тема ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО (нет файла → тихо)
+
+# ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО — звуки (нет файла → тихо)
+SFX_WORMCHELLO_SPAWN = _s("sfx_wormchello_spawn.wav")
+SFX_WORMCHELLO_SHOOT = _s("sfx_wormchello_shoot.wav")
+SFX_WORMCHELLO_HIT = _s("sfx_wormchello_hit.wav")
+SFX_WORMCHELLO_DEATH = _s("sfx_wormchello_death.wav")
+SFX_WORMCHELLO_PHASE2 = _s("sfx_wormchello_phase2.wav")
+SFX_WORMCHELLO_ROAR = _s("sfx_wormchello_roar.wav")
 
 # ---------- Шрифты (assets/fonts/) ----------
 # Разделены по элементам игры. Если файла нет — берётся системный шрифт

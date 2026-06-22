@@ -354,6 +354,79 @@ def make_bk_minion(scale=0.9):
     return root
 
 
+def make_wormchello_head(face_texture=None):
+    """Голова ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО — большая телесного цвета сфера с причёской.
+
+    face_texture: уже загруженная Texture или None. Если задана, натягивается
+    так, что центр картинки = перёд головы (при heading=0 голова смотрит в +Y).
+    """
+    from panda3d.core import TextureStage
+    root = NodePath("wormchello_head")
+    flesh = (0.91, 0.72, 0.58, 1)
+    head_r = 1.4
+
+    # основная сфера головы
+    head_np = make_uv_sphere(head_r, 14, 20, flesh)
+    head_np.reparentTo(root)
+    if face_texture:
+        head_np.setTexture(face_texture)
+        # сдвиг UV: U=0.25 = направление +Y (перёд) → попадает на центр текстуры (U=0.5)
+        ts = TextureStage.getDefault()
+        head_np.setTexOffset(ts, (0.25, 0.0))
+
+    # причёска: ряд стренд-цилиндров на макушке с наклоном вперёд
+    hair = (0.22, 0.14, 0.08, 1)
+    strands = [
+        # (x,  y,    z,   rx  rz  len)  — rx=наклон вперёд, rz=в стороны
+        (0.00, 0.10, head_r * 0.88, -25,  0, 0.60),
+        (0.30, 0.05, head_r * 0.82, -30, -12, 0.52),
+        (-0.30, 0.05, head_r * 0.82, -30, 12, 0.52),
+        (0.55, 0.0,  head_r * 0.72, -35, -22, 0.44),
+        (-0.55, 0.0, head_r * 0.72, -35, 22, 0.44),
+        (0.15, -0.15, head_r * 0.85, -20, -6, 0.56),
+        (-0.15, -0.15, head_r * 0.85, -20, 6, 0.56),
+    ]
+    for (sx, sy, sz, rx, rz, slen) in strands:
+        strand = make_cylinder(0.10, slen, 5, hair)
+        strand.reparentTo(root)
+        strand.setPos(sx, sy, sz)
+        strand.setHpr(rz, rx, 0)
+
+    # белки глаз (два крупных шара по бокам переда)
+    white = (0.96, 0.94, 0.90, 1)
+    iris  = (0.12, 0.24, 0.60, 1)
+    pupil = (0.04, 0.04, 0.04, 1)
+    for sx in (-1, 1):
+        eye_x = sx * 0.62
+        eye_y = head_r * 0.78
+        eye_z = 0.20
+        # белок
+        e_white = make_sphere(1.0, 6, 10, white)
+        e_white.reparentTo(root)
+        e_white.setScale(0.32, 0.22, 0.32)
+        e_white.setPos(eye_x, eye_y, eye_z)
+        # радужка
+        e_iris = make_sphere(1.0, 5, 8, iris)
+        e_iris.reparentTo(root)
+        e_iris.setScale(0.20, 0.12, 0.20)
+        e_iris.setPos(eye_x, eye_y + 0.14, eye_z)
+        # зрачок (тёмный) — full-bright
+        e_pupil = make_sphere(1.0, 4, 6, pupil)
+        e_pupil.reparentTo(root)
+        e_pupil.setScale(0.10, 0.08, 0.10)
+        e_pupil.setPos(eye_x, eye_y + 0.20, eye_z)
+        e_pupil.setLightOff(1)
+
+    return root
+
+
+def make_wormchello_segment(radius=1.0, color=(0.88, 0.68, 0.54, 1)):
+    """Один сегмент тела Червячелло — слегка сплюснутая сфера телесного цвета."""
+    np = make_sphere(radius, 8, 12, color)
+    np.setScale(1.0, 1.0, 0.82)
+    return np
+
+
 def make_boss(scale=3.0):
     """Босс «Папаня»: крупный таракан с золотой короной."""
     root = make_cockroach(body_color=(0.35, 0.2, 0.12, 1), scale=scale)

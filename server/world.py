@@ -563,6 +563,174 @@ class AntShot:
         return [self.asid, round(self.pos[0], 2), round(self.pos[1], 2), round(self.pos[2], 2)]
 
 
+class WormShot:
+    """Снаряд-биомасса ЧЕРВЯЧЕЛЛО — летит в игрока по дуге."""
+    __slots__ = ("wsid", "pos", "vel", "die_at")
+
+    def __init__(self, wsid, origin, target_pos, now):
+        self.wsid = wsid
+        self.pos = [float(origin[0]), float(origin[1]), float(origin[2])]
+        tx = float(target_pos[0]); ty = float(target_pos[1])
+        tz = float(target_pos[2]) + C.PLAYER_HEIGHT * 0.5
+        dx = tx - origin[0]; dy = ty - origin[1]; dz = tz - origin[2]
+        n = math.sqrt(dx*dx + dy*dy + dz*dz) or 1.0
+        sp = C.WORMCHELLO_PROJ_SPEED
+        self.vel = [dx/n*sp, dy/n*sp, dz/n*sp]
+        self.die_at = now + C.WORMCHELLO_PROJ_LIFE
+
+    def update(self, dt):
+        self.pos[0] += self.vel[0] * dt
+        self.pos[1] += self.vel[1] * dt
+        self.pos[2] += self.vel[2] * dt
+        self.vel[2] += C.GRAVITY * dt * 0.06   # лёгкая дуга вниз
+
+    def snapshot(self):
+        return [self.wsid, round(self.pos[0], 2), round(self.pos[1], 2), round(self.pos[2], 2)]
+
+
+class WormChello:
+    """ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО — финальный босс волны 12.
+
+    Состояния:
+    UNDERGROUND — прячется под землёй, перемещается к следующей норе
+    PEEKING     — голова торчит из норы, стреляет в ближайшего игрока
+    SLITHERING  — ползёт по поверхности как змея через 4 норы (высокая скорость)
+    AERIAL      — фаза 2: голова взмывает в воздух над центром, массовый обстрел
+    """
+    HOLES = C.WORMCHELLO_HOLES   # 4 точки нор
+
+    __slots__ = ("pos", "hp", "max_hp", "phase", "state", "hole_idx",
+                 "h", "shoot_at", "state_until", "spawn_minion_at",
+                 "body_trail", "slither_pts", "slither_idx")
+
+    def __init__(self, now):
+        self.hp = C.WORMCHELLO_HP
+        self.max_hp = C.WORMCHELLO_HP
+        self.phase = 1
+        self.state = "UNDERGROUND"
+        self.hole_idx = 0
+        hx, hy = self.HOLES[0]
+        self.pos = [hx, hy, -4.0]
+        self.h = 0.0
+        self.shoot_at = now + 999.0   # отключена до первого PEEKING
+        self.state_until = now + 3.5  # задержка для кат-сцены
+        self.spawn_minion_at = now + C.WORMCHELLO_MINION_INTERVAL + 5.0
+        self.body_trail = [[hx, hy, -4.0]] * 24
+        self.slither_pts = []
+        self.slither_idx = 0
+
+    def update(self, dt, now, players):
+        if self.state == "UNDERGROUND":
+            if now >= self.state_until:
+                self._go_peek(now)
+        elif self.state == "PEEKING":
+            self._update_peeking(dt, now, players)
+        elif self.state == "SLITHERING":
+            self._update_slithering(dt, now)
+        elif self.state == "AERIAL":
+            self._update_aerial(dt, now)
+        # обновляем трейл тела
+        self.body_trail.insert(0, list(self.pos))
+        if len(self.body_trail) > 24:
+            self.body_trail.pop()
+
+    def _go_peek(self, now, hole=None):
+        self.hole_idx = hole if hole is not None else random.randint(0, 3)
+        hx, hy = self.HOLES[self.hole_idx]
+        self.pos = [hx, hy, -3.5]
+        self.state = "PEEKING"
+        self.state_until = now + C.WORMCHELLO_PEEK_DURATION
+        self.shoot_at = now + 0.7
+
+    def _update_peeking(self, dt, now, players):
+        # медленно высовываемся из норы
+        if self.pos[2] < C.WORMCHELLO_PEEK_Z:
+            self.pos[2] = min(C.WORMCHELLO_PEEK_Z, self.pos[2] + 7.0 * dt)
+        # остаёмся на позиции норы
+        hx, hy = self.HOLES[self.hole_idx]
+        self.pos[0] = hx; self.pos[1] = hy
+        # поворот к ближайшему игроку
+        target = _nearest_player(players, self.pos, 9999)
+        if target:
+            dx = target.pos[0] - self.pos[0]
+            dy = target.pos[1] - self.pos[1]
+            self.h = math.degrees(math.atan2(-dx, dy))
+        if now >= self.state_until:
+            if self.phase == 2 and random.random() < C.WORMCHELLO_AERIAL_CHANCE:
+                self._go_aerial(now)
+            elif random.random() < C.WORMCHELLO_SLITHER_CHANCE:
+                self._go_slither(now)
+            else:
+                self._go_underground(now)
+
+    def _go_underground(self, now):
+        self.state = "UNDERGROUND"
+        # переходим в случайную другую нору мгновенно (под землёй)
+        new_hole = (self.hole_idx + random.randint(1, 3)) % 4
+        self.hole_idx = new_hole
+        hx, hy = self.HOLES[new_hole]
+        self.pos = [hx, hy, -4.0]
+        self.shoot_at = now + 999.0
+        self.state_until = now + random.uniform(2.0, C.WORMCHELLO_PEEK_INTERVAL)
+
+    def _go_slither(self, now):
+        self.state = "SLITHERING"
+        self.pos[2] = 0.6
+        order = list(range(4))
+        random.shuffle(order)
+        self.slither_pts = [list(self.HOLES[i]) for i in order]
+        self.slither_idx = 0
+        self.state_until = now + 9.0   # максимальное время ползания
+
+    def _update_slithering(self, dt, now):
+        if self.slither_idx >= len(self.slither_pts):
+            self._go_underground(now)
+            return
+        tx, ty = self.slither_pts[self.slither_idx]
+        dx = tx - self.pos[0]; dy = ty - self.pos[1]
+        dist = math.hypot(dx, dy)
+        spd = C.WORMCHELLO_SLITHER_SPEED
+        if dist < 1.5:
+            self.pos[0] = tx; self.pos[1] = ty
+            self.slither_idx += 1
+        else:
+            self.pos[0] += (dx / dist) * spd * dt
+            self.pos[1] += (dy / dist) * spd * dt
+            self.h = math.degrees(math.atan2(-dx, dy))
+        self.pos[2] = 0.6
+        if now >= self.state_until:
+            self._go_underground(now)
+
+    def _go_aerial(self, now):
+        self.state = "AERIAL"
+        # поднимается над центром арены
+        self.pos[0] = random.uniform(-6.0, 6.0)
+        self.pos[1] = random.uniform(-6.0, 6.0)
+        self.pos[2] = 1.0  # начнёт подниматься в update
+        self.shoot_at = now + 0.6
+        self.state_until = now + C.WORMCHELLO_AERIAL_DURATION
+
+    def _update_aerial(self, dt, now):
+        if self.pos[2] < C.WORMCHELLO_AERIAL_Z:
+            self.pos[2] = min(C.WORMCHELLO_AERIAL_Z, self.pos[2] + 20.0 * dt)
+        if now >= self.state_until:
+            self._go_underground(now)
+
+    def snapshot(self):
+        trail = [[round(p[0], 1), round(p[1], 1), round(p[2], 1)]
+                 for p in self.body_trail[:20]]
+        return {
+            "pos": [round(v, 2) for v in self.pos],
+            "h": round(self.h, 1),
+            "hp": self.hp,
+            "max": self.max_hp,
+            "phase": self.phase,
+            "state": self.state,
+            "hole": self.hole_idx,
+            "trail": trail,
+        }
+
+
 class Slit:
     """ЩЕЛЬ — настенный враг: два прижатых шара. Шкала удовлетворённости (0..1)
     наполняется попаданиями МАЙОНЕЗА. Заполнил до краёв — щель повержена."""
@@ -864,6 +1032,9 @@ class World:
         self._next_boss_shot_id = 1
         self.smile_roaches = {}   # sid -> SmileRoach
         self._next_smile_id = 1
+        self.wormchello = None          # WormChello — финальный босс волны 12
+        self.worm_shots = {}            # wsid -> WormShot
+        self._next_worm_shot_id = 1
         self.slits = {}              # sid -> Slit (настенный враг «ЩЕЛЬ»)
         self._next_slit_id = 1
         self.slit_event_active = False
@@ -918,8 +1089,9 @@ class World:
             self.boss = None
             self.boss2 = None
             self.smile_roaches.clear()
+            self.wormchello = None
+            self.worm_shots.clear()
             self.slits = {}
-            self.slit_event_active = False
             self.drops.clear()
             self.wave = 0
             self._wave_pending = False
@@ -1095,7 +1267,12 @@ class World:
         # волна с боссом
         if self.wave % C.BOSS_EVERY == 0:
             respect_max = round(C.BOSS_RESPECT_MAX * scale)
-            if self.wave == C.DOUBLE_BOSS_WAVE:
+            if self.wave == C.WORMCHELLO_WAVE:
+                # волна 12: ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО
+                self.wormchello = WormChello(now)
+                self.events.append({"t": "event", "kind": "wormchello_spawn",
+                                    "holes": C.WORMCHELLO_HOLES, "wave": self.wave})
+            elif self.wave == C.DOUBLE_BOSS_WAVE:
                 # волна 9: два Папани с разных сторон
                 self.boss = Boss(now)
                 self.boss.respect_max = respect_max
@@ -1125,7 +1302,8 @@ class World:
                 self._start_wave()
             elif (not self._wave_pending and not self.ants
                   and not self.neon_ants and not self.smile_roaches
-                  and self.boss is None and self.boss2 is None):
+                  and self.boss is None and self.boss2 is None
+                  and self.wormchello is None):
                 self._wave_pending = True
                 self.next_wave_at = now + C.WAVE_DELAY
 
@@ -1166,6 +1344,9 @@ class World:
             self._touch_damage(dt, now)
         self._update_slits(dt, now)   # щели живут независимо от заморозки
         self._update_black_king(dt, now)
+        if self.wormchello:
+            self._update_wormchello(dt, now)
+        self._update_worm_shots(dt, now)
 
     def _update_player_vel(self, dt):
         """Оценить скорость игроков по смещению за тик (для упреждения снарядов босса)."""
@@ -1229,6 +1410,18 @@ class World:
             if not hit and self.boss2 and shot.kind == C.WEAPON_SYRUP:
                 if _dist2(shot.pos, [self.boss2.pos[0], self.boss2.pos[1], 1.2]) < 16.0:
                     self._respect_boss(self.boss2, shot.owner, now)
+                    hit = True
+            # ЧЕРВЯЧЕЛЛО — сироп снимает HP (только когда не под землёй)
+            if (not hit and self.wormchello and shot.kind == C.WEAPON_SYRUP
+                    and self.wormchello.state != "UNDERGROUND"):
+                wc = self.wormchello
+                if _dist2(shot.pos, wc.pos) < (C.PROJECTILE_RADIUS + 1.5) ** 2:
+                    wc.hp -= C.PROJECTILE_DAMAGE
+                    self.events.append({"t": "event", "kind": "wormchello_hit",
+                                        "pos": [round(wc.pos[0], 2), round(wc.pos[1], 2),
+                                                round(wc.pos[2], 2)]})
+                    if wc.hp <= 0:
+                        self._defeat_wormchello(shot.owner, now)
                     hit = True
             # BLACK KING — сироп наносит HP-урон
             if not hit and self.bk_boss and shot.kind == C.WEAPON_SYRUP:
@@ -1378,6 +1571,86 @@ class World:
             self.events.append({"t": "event", "kind": "smile_spray",
                                 "pos": [round(bx, 2), round(by, 2), 0.0],
                                 "radius": C.SMILE_ROACH_SPRAY_RADIUS})
+
+    # --- ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО ---
+
+    def _update_wormchello(self, dt, now):
+        wc = self.wormchello
+        wc.update(dt, now, self.players)
+        # переход в фазу 2
+        if wc.phase == 1 and wc.hp <= wc.max_hp * C.WORMCHELLO_PHASE2_FRAC:
+            wc.phase = 2
+            self.events.append({"t": "event", "kind": "wormchello_phase2"})
+        # стрельба
+        if wc.state in ("PEEKING", "AERIAL") and now >= wc.shoot_at:
+            interval = (C.WORMCHELLO_AERIAL_SHOOT_INT
+                        if wc.state == "AERIAL" else C.WORMCHELLO_SHOOT_INTERVAL)
+            wc.shoot_at = now + interval
+            if wc.state == "AERIAL":
+                # воздушная атака: стреляет по ВСЕМ живым игрокам сразу
+                for pl in self.players.values():
+                    if not pl.dead:
+                        self._wormchello_fire(wc, pl.pos, now)
+            else:
+                target = _nearest_player(self.players, wc.pos, 9999)
+                if target:
+                    self._wormchello_fire(wc, target.pos, now)
+        # спавн прихвостней
+        if now >= wc.spawn_minion_at:
+            wc.spawn_minion_at = now + C.WORMCHELLO_MINION_INTERVAL
+            self._wormchello_spawn_minions(now)
+
+    def _wormchello_fire(self, wc, target_pos, now):
+        wsid = self._next_worm_shot_id
+        self._next_worm_shot_id += 1
+        self.worm_shots[wsid] = WormShot(wsid, wc.pos, target_pos, now)
+        self.events.append({"t": "event", "kind": "wormchello_shoot",
+                            "pos": [round(wc.pos[0], 2), round(wc.pos[1], 2), round(wc.pos[2], 2)]})
+
+    def _wormchello_spawn_minions(self, now):
+        immune = now + 1.8
+        for _ in range(C.WORMCHELLO_MINION_ANTS):
+            ant = Ant(self._next_ant_id, self._far_spawn_point())
+            ant.spawn_immune_until = immune
+            self.ants[self._next_ant_id] = ant
+            self._next_ant_id += 1
+        for _ in range(C.WORMCHELLO_MINION_NEONS):
+            na = NeonAnt(self._next_neon_id, now)
+            na.spawn_immune_until = immune
+            na.pos = list(self._far_spawn_point()) + [0.0]
+            self.neon_ants[self._next_neon_id] = na
+            self._next_neon_id += 1
+        self.events.append({"t": "event", "kind": "wormchello_minions",
+                            "count": C.WORMCHELLO_MINION_ANTS + C.WORMCHELLO_MINION_NEONS})
+
+    def _defeat_wormchello(self, owner_id, now):
+        wc = self.wormchello
+        if not wc:
+            return
+        owner = self.players.get(owner_id)
+        for pl in self.players.values():
+            pl.score += C.WORMCHELLO_SCORE
+        self.events.append({"t": "event", "kind": "wormchello_defeated",
+                            "by": owner.name if owner else "?"})
+        self.wormchello = None
+
+    def _update_worm_shots(self, dt, now):
+        dead = []
+        for wsid, ws in self.worm_shots.items():
+            ws.update(dt)
+            hit = False
+            for pl in self.players.values():
+                if pl.dead:
+                    continue
+                tc = [pl.pos[0], pl.pos[1], pl.pos[2] + C.PLAYER_HEIGHT * 0.5]
+                if _dist2(ws.pos, tc) < (C.PROJECTILE_RADIUS + 0.7) ** 2:
+                    self._hurt(pl, C.WORMCHELLO_PROJ_DAMAGE, now, None)
+                    hit = True
+                    break
+            if hit or _hits_wall(ws.pos) or ws.pos[2] <= 0.0 or now >= ws.die_at:
+                dead.append(wsid)
+        for wsid in dead:
+            self.worm_shots.pop(wsid, None)
 
     def _neon_ant_shoot(self, now):
         for na in self.neon_ants.values():
@@ -1662,6 +1935,9 @@ class World:
                 touch_dmg = max(touch_dmg, C.ANT_TOUCH_DAMAGE)
             if self.boss2 and _dist2(pl.pos, self.boss2.pos) < (C.ANT_TOUCH_RANGE + 1.5) ** 2:
                 touch_dmg = max(touch_dmg, C.ANT_TOUCH_DAMAGE)
+            if (self.wormchello and self.wormchello.state == "SLITHERING"
+                    and _dist2(pl.pos, self.wormchello.pos) < (C.ANT_TOUCH_RANGE + 1.2) ** 2):
+                touch_dmg = max(touch_dmg, C.WORMCHELLO_TOUCH_DAMAGE)
             if self.bk_boss and _dist2(pl.pos, self.bk_boss.pos) < (C.ANT_TOUCH_RANGE + 1.5) ** 2:
                 touch_dmg = max(touch_dmg, C.BLACK_KING_TOUCH_DAMAGE)
             if not touch_dmg:
@@ -1723,6 +1999,8 @@ class World:
             self.boss_shots.clear()
             self.boss = None
             self.boss2 = None
+            self.wormchello = None
+            self.worm_shots.clear()
             self.slits = {}
             self.slit_event_active = False
 
@@ -1782,6 +2060,8 @@ class World:
             "boss": self.boss.snapshot() if self.boss else None,
             "boss2": self.boss2.snapshot() if self.boss2 else None,
             "smile_roaches": [sr.snapshot() for sr in self.smile_roaches.values()],
+            "wormchello": self.wormchello.snapshot() if self.wormchello else None,
+            "wshots": [ws.snapshot() for ws in self.worm_shots.values()],
             "slits": [s.snapshot() for s in self.slits.values()],
             "slit_time": (round(max(0.0, self.slit_deadline - time.time()), 1)
                           if self.slit_event_active else 0.0),

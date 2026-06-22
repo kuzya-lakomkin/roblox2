@@ -588,6 +588,15 @@ class Roblox2(ShowBase):
         self.boss2_bar = None
         self.boss2_info = None
         self.smile_roach_nodes = {}   # sid -> NodePath
+        # ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО
+        self.wormchello_info = None
+        self._wc_head_node = None     # голова (всегда один узел)
+        self._wc_seg_nodes = []       # сегменты тела (список NodePath)
+        self.wc_bar = None            # WorldBar HP
+        self.worm_shot_nodes = {}     # wsid -> NodePath
+        self._wc_hole_nodes = []      # 4 тёмных диска нор (кат-сцена)
+        self._prev_wc_hp = 0
+        self._wc_roar_cd = 0.0       # кулдаун реплик
         self.bk_boss_node = None
         self._bk_is_model = False
         self.bk_boss_bar = None
@@ -692,7 +701,8 @@ class Roblox2(ShowBase):
         self.remote.clear()
         for d in (self.ant_nodes, self.neon_ant_nodes, self.ant_shot_nodes,
                   self.shot_nodes, self.bee_nodes, self.drop_nodes,
-                  self.boss_shot_nodes, self.slit_nodes, self.smile_roach_nodes):
+                  self.boss_shot_nodes, self.slit_nodes, self.smile_roach_nodes,
+                  self.worm_shot_nodes):
             for n in d.values():
                 n.removeNode()
             d.clear()
@@ -717,6 +727,7 @@ class Roblox2(ShowBase):
         if self.boss2_bar is not None:
             self.boss2_bar.destroy()
             self.boss2_bar = None
+        self._clear_wormchello_nodes()
         if self.bk_boss_node is not None:
             self.bk_boss_node.removeNode()
             self.bk_boss_node = None
@@ -1915,6 +1926,10 @@ class Roblox2(ShowBase):
             # фаза BLACK KING: не переключать музыку сцен ЩЕЛИ поверх темы BLACK KING
             self._slit_music_on = self.slit_time > 0.0
             return
+        if self.wormchello_info:
+            # фаза ЧЕРВЯЧЕЛЛО: не перебивать его тему
+            self._slit_music_on = self.slit_time > 0.0
+            return
         active = self.slit_time > 0.0
         if active:
             if self.slit_time <= C.SLIT_FINAL_PHASE:
@@ -2194,6 +2209,13 @@ class Roblox2(ShowBase):
                 self._boss_voice_at = now + random.uniform(4.0, 9.0)
         else:
             self._boss_voice_at = 0.0
+        # звуки Червячелло: периодический рёв
+        self._wc_roar_cd = max(0.0, self._wc_roar_cd - dt)
+        if self.wormchello_info and self._wc_roar_cd <= 0:
+            wc_state = self.wormchello_info.get("state", "UNDERGROUND")
+            if wc_state != "UNDERGROUND":
+                self._play_oneshot(AC.SFX_WORMCHELLO_ROAR)
+                self._wc_roar_cd = random.uniform(6.0, 12.0)
         # звук попадания по BLACK KING
         self._bk_hit_cd = max(0.0, self._bk_hit_cd - dt)
         if self.bk_boss_info:
@@ -2518,6 +2540,32 @@ class Roblox2(ShowBase):
             self._show_notice("ВАЙП  все погибли  начинаем с волны 1!",
                               color=(1.0, 0.2, 0.2, 1), duration=4.0)
             self._play_music(AC.MUSIC_PHASE1)
+        elif kind == "wormchello_spawn":
+            self._wormchello_cutscene(msg)
+        elif kind == "wormchello_shoot":
+            pos = msg.get("pos", [0, 0, 2])
+            self._play_oneshot(AC.SFX_WORMCHELLO_SHOOT, volume=self._vol_at(pos[0], pos[1]))
+            self.particles.burst([pos[0], pos[1], pos[2]], count=4,
+                                 color=(0.9, 0.6, 0.3, 1), speed=6.0,
+                                 size=0.2, life=0.35, grav=-5.0, spread=0.5, up=0.5)
+        elif kind == "wormchello_hit":
+            pos = msg.get("pos", [0, 0, 2])
+            self.particles.burst([pos[0], pos[1], pos[2]], count=8,
+                                 color=(0.95, 0.55, 0.2, 1), speed=5.0,
+                                 size=0.28, life=0.5, grav=-7.0, spread=1.0, up=0.7)
+        elif kind == "wormchello_phase2":
+            self._show_notice("ЧЕРВЯЧЕЛЛО - ФАЗА 2!", color=(1.0, 0.45, 0.1, 1), duration=3.0)
+            self._flash_screen((1.0, 0.6, 0.2, 1), 0.5)
+            self._play_oneshot(AC.SFX_WORMCHELLO_PHASE2)
+        elif kind == "wormchello_defeated":
+            by = msg.get("by", "?")
+            self._show_notice(f"ЧЕРВЯЧЕЛЛО ПОБЕЖДЁН! (+{50} очков)", color=(0.95, 0.8, 0.2, 1), duration=5.0)
+            self._flash_screen((1.0, 0.9, 0.4, 1), 0.8)
+            self._shake(0.6)
+            self._play_oneshot(AC.SFX_WORMCHELLO_DEATH)
+            self._play_music(AC.MUSIC_PHASE1)
+        elif kind == "wormchello_minions":
+            self._show_notice("Червячелло вызывает тараканов!", color=(0.9, 0.5, 0.1, 1), duration=2.0)
         elif kind == "smile_roach_killed":
             pos = msg.get("pos", [0, 0])
             self.particles.burst([pos[0], pos[1], 0.4], count=10,
@@ -2687,6 +2735,8 @@ class Roblox2(ShowBase):
         self.boss_info = msg.get("boss")
         self.boss2_info = msg.get("boss2")
         self._last_smile_roaches = msg.get("smile_roaches", [])
+        self.wormchello_info = msg.get("wormchello")
+        self._last_wshots = msg.get("wshots", [])
         prev_bk = self.black_king
         self.black_king = bool(msg.get("black_king"))
         # при переподключении (black_king_spawn не придёт снова) — сразу включить музыку
@@ -3082,8 +3132,10 @@ class Roblox2(ShowBase):
                 self.boss2_bar = None
 
         # улыбающиеся тараканы — обновляем ноды по снапшоту
-        # (snap доступен через последний msg.get в _apply_snapshot)
         self._update_smile_roaches()
+        # ЧЕРВЯЧЕЛЛО
+        self._update_wormchello_rendering()
+        self._update_worm_shots()
 
     def _update_smile_roaches(self):
         snap_srs = getattr(self, "_last_smile_roaches", [])
@@ -3108,6 +3160,172 @@ class Roblox2(ShowBase):
             if sid not in seen:
                 self.smile_roach_nodes[sid].removeNode()
                 del self.smile_roach_nodes[sid]
+
+    # ---------------------------------------------------------------- Wormchello
+
+    def _init_wormchello_nodes(self):
+        from client.procgen import make_wormchello_head, make_wormchello_segment
+        from client.assets import load_texture, texture_exists
+        face_tex = None
+        if texture_exists(AC.WORMCHELLO_FACE_TEXTURE):
+            face_tex = load_texture(self.loader, AC.WORMCHELLO_FACE_TEXTURE)
+        self._wc_head_node = make_wormchello_head(face_tex)
+        self._wc_head_node.reparentTo(self.render)
+        # 8 сегментов тела (размер уменьшается к хвосту)
+        flesh = (0.88, 0.68, 0.54, 1)
+        self._wc_seg_nodes = []
+        for i in range(8):
+            r = max(0.5, 1.2 - i * 0.08)
+            seg = make_wormchello_segment(r, flesh)
+            seg.reparentTo(self.render)
+            seg.hide()
+            self._wc_seg_nodes.append(seg)
+        # HP-бар
+        self.wc_bar = WorldBar(self.render,
+                               label="ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО",
+                               width=4.2, height=0.46,
+                               fill_color=(0.94, 0.45, 0.1, 1),
+                               font=self.fonts.get("world"))
+        # 4 норы — тёмные диски в полу
+        self._spawn_hole_nodes()
+
+    def _spawn_hole_nodes(self):
+        from client.procgen import make_cylinder
+        from common.config import WORMCHELLO_HOLES
+        self._wc_hole_nodes = []
+        for (hx, hy) in WORMCHELLO_HOLES:
+            disc = make_cylinder(2.2, 0.12, 20, (0.04, 0.03, 0.02, 1))
+            disc.reparentTo(self.render)
+            disc.setPos(hx, hy, 0.05)
+            disc.hide()
+            self._wc_hole_nodes.append(disc)
+
+    def _clear_wormchello_nodes(self):
+        if self._wc_head_node:
+            self._wc_head_node.removeNode()
+            self._wc_head_node = None
+        for seg in self._wc_seg_nodes:
+            if seg:
+                seg.removeNode()
+        self._wc_seg_nodes = []
+        if self.wc_bar:
+            self.wc_bar.destroy()
+            self.wc_bar = None
+        for n in self._wc_hole_nodes:
+            if n:
+                n.removeNode()
+        self._wc_hole_nodes = []
+
+    def _update_wormchello_rendering(self):
+        info = self.wormchello_info
+        if not info:
+            if self._wc_head_node is not None:
+                self._clear_wormchello_nodes()
+            return
+
+        if self._wc_head_node is None:
+            self._init_wormchello_nodes()
+
+        state = info.get("state", "UNDERGROUND")
+        px, py, pz = info["pos"]
+        hp, max_hp = info["hp"], info["max"]
+        ph = info.get("phase", 1)
+        trail = info.get("trail", [])
+
+        visible = (state != "UNDERGROUND")
+
+        # голова
+        if visible:
+            self._wc_head_node.show()
+            self._wc_head_node.setPos(px, py, pz)
+            self._wc_head_node.setH(info.get("h", 0.0))
+        else:
+            self._wc_head_node.hide()
+
+        # тело — сегменты по трейлу
+        show_segs = (state == "SLITHERING")
+        for i, seg_np in enumerate(self._wc_seg_nodes):
+            tidx = (i + 1) * 2  # каждые 2 точки трейла = один сегмент
+            if show_segs and tidx < len(trail):
+                tx, ty, tz = trail[tidx]
+                seg_np.show()
+                seg_np.setPos(tx, ty, tz)
+                # ориентация сегмента: повернуть к следующему
+                if tidx + 2 < len(trail):
+                    nx_pt, ny_pt = trail[tidx + 2][0], trail[tidx + 2][1]
+                    dx_s = tx - nx_pt; dy_s = ty - ny_pt
+                    if math.hypot(dx_s, dy_s) > 0.01:
+                        seg_np.setH(math.degrees(math.atan2(-dx_s, dy_s)))
+            else:
+                seg_np.hide()
+
+        # дыры — показываем только при активном боссе
+        for n in self._wc_hole_nodes:
+            n.show()
+
+        # HP-бар
+        bar_z = pz + 4.5 if visible else (self._wc_hole_nodes[0].getZ() + 3 if self._wc_hole_nodes else 5.0)
+        self.wc_bar.set_pos(px, py, bar_z)
+        self.wc_bar.set_fraction(hp / max_hp if max_hp else 0.0)
+        self.wc_bar.set_label(f"ЧЕРВЯЧЕЛЛО ({ph} фаза) - {hp}/{max_hp}")
+
+        # хит-партиклы
+        if hp < self._prev_wc_hp and visible:
+            self.particles.burst([px, py, pz], count=12,
+                                 color=(0.95, 0.55, 0.2, 1), speed=5.0,
+                                 size=0.3, life=0.6, grav=-6.0, spread=1.2, up=0.8)
+            self._play_oneshot(AC.SFX_WORMCHELLO_HIT, volume=self._vol_at(px, py))
+        self._prev_wc_hp = hp
+
+        # фаза 2: при воздушной атаке — нити биомассы сверху
+        if state == "AERIAL" and pz > 8.0:
+            self.particles.burst([px, py, pz - 1.0], count=3,
+                                 color=(0.90, 0.65, 0.45, 1), speed=3.5,
+                                 size=0.4, life=1.2, grav=2.0, spread=0.6, up=-1.0)
+
+    def _update_worm_shots(self):
+        seen = set()
+        for ws_data in getattr(self, "_last_wshots", []):
+            wsid, wx, wy, wz = ws_data
+            seen.add(wsid)
+            node = self.worm_shot_nodes.get(wsid)
+            if node is None:
+                from client.primitives import make_box
+                node = make_box(0.35, 0.35, 0.35, (0.88, 0.55, 0.25, 1))
+                node.setLightOff(1)
+                node.reparentTo(self.render)
+                self.worm_shot_nodes[wsid] = node
+            node.setPos(wx, wy, wz)
+        for wsid in list(self.worm_shot_nodes):
+            if wsid not in seen:
+                self.worm_shot_nodes[wsid].removeNode()
+                del self.worm_shot_nodes[wsid]
+
+    def _wormchello_cutscene(self, msg):
+        """Кат-сцена появления Червячелло: телепорт в центр, вспышка, дыры."""
+        import random as _r
+        # Телепорт игрока в центральную арену
+        if self.state == "COMBAT":
+            self.pos.set(_r.uniform(-4, 4), _r.uniform(-4, 4), 0.1)
+        # инициализировать ноды (дыры) до следующего снапшота
+        if self._wc_head_node is None:
+            self._init_wormchello_nodes()
+        # показать дыры
+        for n in self._wc_hole_nodes:
+            n.show()
+        # эффекты
+        self._show_notice("ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО!", color=(0.95, 0.45, 0.1, 1), duration=6.0)
+        self._flash_screen((0.0, 0.0, 0.0, 1), 0.9)
+        self._shake(0.8)
+        self._play_oneshot(AC.SFX_WORMCHELLO_SPAWN)
+        self._play_music(AC.MUSIC_WORMCHELLO)
+        # дыры открываются: партиклы земли вокруг каждой норы
+        from common.config import WORMCHELLO_HOLES
+        for (hx, hy) in WORMCHELLO_HOLES:
+            self.particles.burst([hx, hy, 0.2], count=18,
+                                 color=(0.38, 0.28, 0.12, 1), speed=5.0,
+                                 size=0.3, life=1.0, grav=-6.0, spread=1.2, up=1.0)
+        self._prev_wc_hp = 2000  # reset hit tracker
 
     def _update_cup_spots(self, spots):
         """Показать поставленные белые стаканы на 4 угловых пьедесталах."""

@@ -89,7 +89,7 @@ class WormModel:
             y = -1.35 + 1.5 * s                      # хвост позади (-Y), голова спереди
             z = 0.16 + 1.7 * (s ** 1.45)             # хвост долго стелется, потом подъём
             r = 0.16 + 0.34 * math.sin(math.pi * (0.16 + 0.7 * s))  # тонкий хвост, тело потолще
-            seg = make_sphere(1.0, 10, 12, body_color)
+            seg = make_sphere(1.0, 7, 10, body_color)
             shade = 0.82 + 0.18 * s
             seg.setColorScale(shade, shade, shade, 1)
             seg.reparentTo(self.anim)
@@ -100,11 +100,11 @@ class WormModel:
         self.head = self.segs[-1]
         # глаза - дети головы (двигаются с её анимациями)
         for sx in (-1, 1):
-            eye = make_sphere(1.0, 8, 8, (1, 1, 1, 1))
+            eye = make_sphere(1.0, 6, 8, (1, 1, 1, 1))
             eye.reparentTo(self.head)
             eye.setPos(sx * 0.42, 0.82, 0.28)
             eye.setScale(0.4)
-            pupil = make_sphere(1.0, 6, 6, eye_color)
+            pupil = make_sphere(1.0, 4, 6, eye_color)
             pupil.reparentTo(self.head)
             pupil.setPos(sx * 0.42, 1.02, 0.28)
             pupil.setScale(0.2)
@@ -528,8 +528,10 @@ class Roblox2(ShowBase):
         self.remote = {}
         self.ant_nodes = {}
         self._ant_prev = {}
+        self._ant_immune_prev = {}   # aid -> bool, кэш alpha-состояния
         self.neon_ant_nodes = {}     # nid -> NodePath (синие стрелки)
         self._neon_hp_bars = {}      # nid -> WorldBar
+        self._neon_immune_prev = {}  # nid -> bool
         self.ant_shot_nodes = {}     # asid -> NodePath (шкибиди-зелье)
         self.neon_alive = 0
         self.shot_nodes = {}
@@ -2682,17 +2684,21 @@ class Roblox2(ShowBase):
             if dx * dx + dy * dy > 1e-5:
                 node.setH(math.degrees(math.atan2(-dx, dy)))
             self._ant_prev[aid] = (ax, ay)
-            if ant_immune:
-                node.setTransparency(TransparencyAttrib.MAlpha)
-                node.setAlphaScale(0.35)
-            else:
-                node.setTransparency(TransparencyAttrib.MNone)
-                node.setAlphaScale(1.0)
+            _ai = bool(ant_immune)
+            if self._ant_immune_prev.get(aid) != _ai:
+                self._ant_immune_prev[aid] = _ai
+                if _ai:
+                    node.setTransparency(TransparencyAttrib.MAlpha)
+                    node.setAlphaScale(0.35)
+                else:
+                    node.setTransparency(TransparencyAttrib.MNone)
+                    node.setAlphaScale(1.0)
         for aid in list(self.ant_nodes):
             if aid not in seen_ants:
                 self.ant_nodes[aid].removeNode()
                 del self.ant_nodes[aid]
                 self._ant_prev.pop(aid, None)
+                self._ant_immune_prev.pop(aid, None)
 
         # синие неоновые муравьи-стрелки (светятся, появляются после 3-й волны)
         seen_neon = set()
@@ -2716,16 +2722,20 @@ class Roblox2(ShowBase):
                 bar = self._neon_hp_bars[nid]
                 bar.set_pos(nx, ny, 2.4)
                 bar.set_fraction(hp / C.NEON_ANT_HP)
-            if neon_immune:
-                node.setTransparency(TransparencyAttrib.MAlpha)
-                node.setAlphaScale(0.35)
-            else:
-                node.setTransparency(TransparencyAttrib.MNone)
-                node.setAlphaScale(1.0)
+            _ni = bool(neon_immune)
+            if self._neon_immune_prev.get(nid) != _ni:
+                self._neon_immune_prev[nid] = _ni
+                if _ni:
+                    node.setTransparency(TransparencyAttrib.MAlpha)
+                    node.setAlphaScale(0.35)
+                else:
+                    node.setTransparency(TransparencyAttrib.MNone)
+                    node.setAlphaScale(1.0)
         for nid in list(self.neon_ant_nodes):
             if nid not in seen_neon:
                 self.neon_ant_nodes[nid].removeNode()
                 del self.neon_ant_nodes[nid]
+                self._neon_immune_prev.pop(nid, None)
                 if nid in self._neon_hp_bars:
                     self._neon_hp_bars[nid].destroy()
                     del self._neon_hp_bars[nid]

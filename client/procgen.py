@@ -261,34 +261,35 @@ def make_cockroach(body_color=(0.28, 0.16, 0.1, 1), scale=1.0):
     body.reparentTo(root)
 
     # брюшко, грудь, голова (вдоль +Y)
-    abdomen = make_sphere(1.0, 10, 12, body_color)
+    abdomen = make_sphere(1.0, 6, 8, body_color)
     _attach(body, abdomen, pos=(0, -0.35, 0.25), scale=(0.32, 0.5, 0.26))
-    thorax = make_sphere(1.0, 10, 12, body_color)
+    thorax = make_sphere(1.0, 6, 8, body_color)
     _attach(body, thorax, pos=(0, 0.15, 0.27), scale=(0.28, 0.32, 0.24))
-    head = make_sphere(1.0, 10, 12, (body_color[0] * 0.8, body_color[1] * 0.8,
-                                     body_color[2] * 0.8, 1))
+    head = make_sphere(1.0, 6, 8, (body_color[0] * 0.8, body_color[1] * 0.8,
+                                    body_color[2] * 0.8, 1))
     _attach(body, head, pos=(0, 0.5, 0.26), scale=(0.2, 0.2, 0.18))
 
     # 6 ног (тонкие цилиндры, наклонены наружу)
     leg_color = (0.12, 0.07, 0.05, 1)
     for side in (-1, 1):
         for k, y in enumerate((0.25, 0.0, -0.25)):
-            leg = make_cylinder(0.03, 0.45, 6, leg_color)
+            leg = make_cylinder(0.03, 0.45, 4, leg_color)
             leg.reparentTo(body)
             leg.setPos(side * 0.28, y, 0.12)
-            leg.setHpr(0, 0, side * 55)     # лежит наклонно наружу
-    # усики (два сегмента цилиндра — имитация кривой)
+            leg.setHpr(0, 0, side * 55)
+    # усики (два сегмента цилиндра)
     for side in (-1, 1):
-        a1 = make_cylinder(0.02, 0.3, 5, leg_color)
+        a1 = make_cylinder(0.02, 0.3, 3, leg_color)
         a1.reparentTo(body)
         a1.setPos(side * 0.08, 0.6, 0.32)
         a1.setHpr(0, 60, side * 10)
-        a2 = make_cylinder(0.018, 0.25, 5, leg_color)
+        a2 = make_cylinder(0.018, 0.25, 3, leg_color)
         a2.reparentTo(body)
         a2.setPos(side * 0.14, 0.78, 0.45)
         a2.setHpr(0, 35, side * 25)
 
     root.setScale(scale)
+    root.flattenStrong()
     return root
 
 
@@ -298,18 +299,19 @@ def make_neon_ant(scale=1.0):
     body = make_cockroach(body_color=(0.16, 0.52, 1.0, 1), scale=1.0)
     body.reparentTo(root)
     # светящийся «реактор» на спине
-    orb = make_sphere(1.0, 10, 12, (0.45, 0.92, 1.0, 1))
+    orb = make_sphere(1.0, 6, 8, (0.45, 0.92, 1.0, 1))
     _attach(root, orb, pos=(0, 0.0, 0.5), scale=(0.22, 0.3, 0.18))
     # светящиеся глаза
     for sx in (-1, 1):
-        eye = make_sphere(1.0, 6, 8, (0.65, 1.0, 1.0, 1))
+        eye = make_sphere(1.0, 4, 6, (0.65, 1.0, 1.0, 1))
         _attach(root, eye, pos=(sx * 0.12, 0.62, 0.34), scale=(0.08, 0.08, 0.08))
     # светящиеся кончики усиков
     for sx in (-1, 1):
-        tip = make_sphere(1.0, 6, 8, (0.5, 0.95, 1.0, 1))
+        tip = make_sphere(1.0, 4, 6, (0.5, 0.95, 1.0, 1))
         _attach(root, tip, pos=(sx * 0.16, 0.9, 0.5), scale=(0.06, 0.06, 0.06))
-    root.setLightOff(1)          # игнорирует освещение сцены — «светится»
+    root.setLightOff(1)
     root.setScale(scale)
+    root.flattenStrong()
     return root
 
 
@@ -341,17 +343,15 @@ def make_boss(scale=3.0):
 def make_bee(body_color=(0.95, 0.78, 0.15, 1)):
     """Пчела: тело-сфера, коническое жало сзади, два крыла."""
     root = NodePath("bee")
-    body = make_sphere(1.0, 8, 10, body_color)
+    body = make_sphere(1.0, 5, 7, body_color)
     _attach(root, body, scale=(0.2, 0.28, 0.2))
-    # полоски — тёмная сфера чуть меньше (имитация)
-    stripe = make_sphere(1.0, 8, 10, (0.1, 0.1, 0.1, 1))
+    stripe = make_sphere(1.0, 5, 7, (0.1, 0.1, 0.1, 1))
     _attach(root, stripe, pos=(0, -0.05, 0), scale=(0.205, 0.1, 0.205))
-    # жало (узкий цилиндр-конус сзади, вдоль -Y)
-    sting = make_cylinder(0.04, 0.2, 5, (0.1, 0.1, 0.1, 1))
+    sting = make_cylinder(0.04, 0.2, 3, (0.1, 0.1, 0.1, 1))
     _attach(root, sting, pos=(0, -0.32, 0), hpr=(0, 90, 0), scale=(0.6, 1, 0.6))
-    # крылья
     for sx in (-1, 1):
-        wing = make_sphere(1.0, 6, 8, (0.85, 0.9, 1.0, 0.6))
+        wing = make_sphere(1.0, 4, 6, (0.85, 0.9, 1.0, 0.6))
         wing.setTransparency(True)
         _attach(root, wing, pos=(sx * 0.18, 0.05, 0.12), scale=(0.18, 0.1, 0.04))
+    root.flattenStrong()
     return root

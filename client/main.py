@@ -632,6 +632,8 @@ class Roblox2(ShowBase):
         self.wave = 0
         self.alive_ants = 0
         self.boss_info = None
+        self._bosses_alive = 0      # счётчик живых боссов текущей волны
+        self._boss_spawn_count = 0  # сколько боссов пришло в этой волне
         self.is_dead = False
         self._respawn_immune = False  # неуязвимость после возрождения (из снапшота)
         self.boss_bar = None       # WorldBar — шкала Уважения над боссом
@@ -792,7 +794,7 @@ class Roblox2(ShowBase):
         # музыка по текущей фазе мира (учитываем BLACK KING и босса)
         if self.black_king:
             self._play_music(AC.MUSIC_BLACK_KING)
-        elif self.boss_info:
+        elif self.boss_info or self.boss2_info:
             self._play_music(AC.MUSIC_BOSS)
         else:
             self._play_music(AC.MUSIC_PHASE1)
@@ -1522,8 +1524,9 @@ class Roblox2(ShowBase):
         self.accept(kb.get("ult",  "q"),      self._ultimate)
         self.accept(kb.get("place_cup", "r"), self._place_cup)
         self.accept(kb.get("camera", "c"),    self._toggle_camera)
-        # бесконечное HP для GODBLESSER (не в настройках управления)
+        # читы для GODBLESSER (не в настройках управления)
         self.accept("9", self._god_toggle)
+        self.accept("8", self._god_lit_energy)
         self.accept(kb.get("emote1", "f"), lambda: self._emote("flex"))
         self.accept(kb.get("emote2", "g"), lambda: self._emote("dance"))
         self.accept(kb.get("emote3", "v"), lambda: self._emote("wave"))
@@ -1938,7 +1941,7 @@ class Roblox2(ShowBase):
                 self._play_music(AC.MUSIC_SLIT)
         elif self._slit_music_on:
             # событие завершилось — вернуть музыку фазы/босса
-            self._play_music(AC.MUSIC_BOSS if self.boss_info else AC.MUSIC_PHASE1)
+            self._play_music(AC.MUSIC_BOSS if (self.boss_info or self.boss2_info) else AC.MUSIC_PHASE1)
         self._slit_music_on = active
 
     def _stop_music(self):
@@ -2037,6 +2040,12 @@ class Roblox2(ShowBase):
             return
         if self.player_name == "GODBLESSER":
             self.net.send({"t": "god_toggle"})
+
+    def _god_lit_energy(self):
+        if self.state != "COMBAT" or not self.net:
+            return
+        if self.player_name == "GODBLESSER":
+            self.net.send({"t": "god_lit"})
 
     def _ultimate(self):
         if self.state != "COMBAT" or self.chat_active or self.is_dead or not self.net:
@@ -2593,15 +2602,37 @@ class Roblox2(ShowBase):
             self._show_notice(f"ВОЛНА {msg.get('wave')}  тараканов: {msg.get('count')}",
                               color=(1.0, 0.65, 0.1, 1), duration=3.0)
         elif kind == "boss_spawn":
-            self._show_notice("ПАПАНЯ ВЫШЕЛ!  Поливай сиропом - копи Уважение!",
-                              color=(1.0, 0.4, 0.1, 1), duration=5.0)
+            if msg.get("double"):
+                self._bosses_alive = 2
+                self._boss_spawn_count = 2
+                self._show_notice(
+                    "ДВА ПАПАНИ!  ДЕЛАЙ ГАЗ!  Поливай обоих сиропом - копи Уважение!",
+                    color=(1.0, 0.15, 0.0, 1), duration=7.0)
+            else:
+                self._bosses_alive = 1
+                self._boss_spawn_count = 1
+                self._show_notice("ПАПАНЯ ВЫШЕЛ!  Поливай сиропом - копи Уважение!",
+                                  color=(1.0, 0.4, 0.1, 1), duration=5.0)
             self._play_oneshot(AC.SFX_BOSS_SPAWN)
             self._play_music(AC.MUSIC_BOSS)
         elif kind == "boss_defeated":
-            self._show_notice(f"ПАПАНЯ ПОВЕРЖЕН!  {msg.get('by')} уважил его!",
-                              color=(1.0, 0.85, 0.1, 1), duration=5.0)
             self._play_oneshot(AC.SFX_BOSS_DEATH)
-            self._play_music(AC.MUSIC_PHASE1)
+            self._bosses_alive = max(0, self._bosses_alive - 1)
+            by = msg.get("by", "?")
+            if self._bosses_alive > 0:
+                self._show_notice(
+                    f"ОДИН ПАПАНЯ ПОВЕРЖЕН!  {by} уважил!  Добей второго!",
+                    color=(1.0, 0.85, 0.1, 1), duration=5.0)
+            else:
+                if self._boss_spawn_count > 1:
+                    self._show_notice(
+                        f"ОБА ПАПАНИ ПОВЕРЖЕНЫ!  {by} добил последнего!",
+                        color=(1.0, 0.85, 0.1, 1), duration=5.0)
+                else:
+                    self._show_notice(
+                        f"ПАПАНЯ ПОВЕРЖЕН!  {by} уважил его!",
+                        color=(1.0, 0.85, 0.1, 1), duration=5.0)
+                self._play_music(AC.MUSIC_PHASE1)
         elif kind == "boss_throw":
             pos = msg.get("pos", [0, 0, 2.5])
             self._play_oneshot(AC.SFX_BOSS_THROW, volume=self._vol_at(pos[0], pos[1]))

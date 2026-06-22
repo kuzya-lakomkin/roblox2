@@ -810,6 +810,7 @@ class Roblox2(ShowBase):
         self._set_menu_blur(False)
         self.hud_root.show()
         self._set_mouse_captured(True)
+        self._slit_music_on = False
         self._play_music(AC.MUSIC_TUTORIAL)
         self._tut_init()
 
@@ -1550,7 +1551,7 @@ class Roblox2(ShowBase):
 
         # Иконка текущего оружия — одна большая карточка, низ-справа
         _wix, _wiz = 1.21, -0.80
-        self._w_icon_bg = self._hud_icon(_wix, _wiz, (0.1, 0.1, 0.1, 0.65), size=0.095)
+        self._w_icon_bg = self._hud_icon(_wix, _wiz + 0.03, (0.1, 0.1, 0.1, 0.65), size=0.095)
         self._w_icon_textures = {
             "syrup": load_texture(self.loader, AC.ICON_SYRUP_TEXTURE),
             "mayo":  load_texture(self.loader, AC.ICON_MAYONEZ_TEXTURE),
@@ -1734,6 +1735,13 @@ class Roblox2(ShowBase):
 
     # ---------- действия ----------
     def _can_fire(self):
+        if self.state == "TUTORIAL" and hasattr(self, '_tut_steps'):
+            step = (self._tut_steps[self._tut_step][0]
+                    if self._tut_step < len(self._tut_steps) else '_done')
+            if step == 'pickup_lit':
+                return False
+            if step == 'neon' and self.weapon != 'hive':
+                return False  # нельзя стрелять до выбора пчёл
         return self.state in ("COMBAT", "TUTORIAL") and not self.chat_active and not self.is_dead
 
     def _on_fire_down(self):
@@ -1824,6 +1832,8 @@ class Roblox2(ShowBase):
         """Во время события щелей играет своя музыка: первые 15с — обычная тревога,
         последние SLIT_FINAL_PHASE секунд — финальная. После события — вернуть фон.
         BLACK KING имеет приоритет и не даёт переключить свою тему."""
+        if self.state == "TUTORIAL":
+            return
         if self.black_king and self.bk_boss_info:
             # фаза BLACK KING: не переключать музыку сцен ЩЕЛИ поверх темы BLACK KING
             self._slit_music_on = self.slit_time > 0.0
@@ -1996,6 +2006,12 @@ class Roblox2(ShowBase):
                 self._update_notices(dt)
                 self._update_hud()
                 self._tut_update(dt)
+                _tut_moving = (not self.is_dead and not self.chat_active
+                               and self.on_ground
+                               and any(self.keys[k] for k in ("forward","backward","left","right")))
+                self._set_loop("_worm_step_snd", AC.SFX_WORM_STEP, _tut_moving)
+                if self._worm_step_snd is not None:
+                    self._worm_step_snd.setVolume(0.5 * self._sfx_vol)
                 return Task.cont
             self._update_menu_background(dt)   # живой фон меню (без подключения)
             return Task.cont

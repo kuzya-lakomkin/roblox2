@@ -1141,6 +1141,7 @@ class World:
     def _update_bees(self, dt, now):
         dead = []
         targets = list(self.ants.values()) + list(self.neon_ants.values())
+        no_targets = not targets
         for bid, bee in self.bees.items():
             bee.update(dt, targets)
             stung = False
@@ -1155,6 +1156,8 @@ class World:
                         self._hurt_neon_ant(nid, bee.owner, now)
                         stung = True
                         break
+            if no_targets:
+                bee.die_at = min(bee.die_at, now + 0.8)
             if stung or now >= bee.die_at:
                 dead.append(bid)
         for bid in dead:

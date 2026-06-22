@@ -52,7 +52,7 @@ class Player:
                  "emote", "pet", "emote_until", "last_shot", "ult_ready_at",
                  "dead", "respawn_at", "resources", "vel", "_last_pos",
                  "touch_inv_until", "lit_energy", "bee_until", "move_slow_until",
-                 "cups", "user_id", "kills_session")
+                 "cups", "user_id", "kills_session", "respawn_immune_until")
 
     def __init__(self, pid, name):
         self.pid = pid
@@ -80,6 +80,7 @@ class Player:
         self.cups = 0                   # белые стаканы (дроп с босса) в руках
         self.user_id = 0               # ID в auth-сервере (0 = не авторизован)
         self.kills_session = 0         # убийств за сессию (отправляется в auth при выходе)
+        self.respawn_immune_until = 0.0  # неуязвимость после возрождения
 
     def snapshot(self):
         now = time.time()
@@ -92,16 +93,18 @@ class Player:
             "bees": round(max(0.0, self.bee_until - now), 1),
             "slow": round(max(0.0, self.move_slow_until - now), 2),
             "cups": self.cups,
+            "rimm": round(max(0.0, self.respawn_immune_until - now), 2),
         }
 
 
 class Ant:
-    __slots__ = ("aid", "pos", "dir", "slow_until", "vz")
+    __slots__ = ("aid", "pos", "dir", "slow_until", "vz", "spawn_immune_until")
 
     def __init__(self, aid, pos=None):
         self.aid = aid
         self.slow_until = 0.0
         self.vz = 0.0
+        self.spawn_immune_until = 0.0
         if pos is None:
             pos = self._fallback_pos()
         self.pos = [pos[0], pos[1], 0.0]   # спавн только на поверхности (не в стенах)
@@ -258,7 +261,8 @@ class Ant:
             self.vz = 0.0
 
     def snapshot(self):
-        return [self.aid, round(self.pos[0], 2), round(self.pos[1], 2), round(self.pos[2], 2)]
+        immune = 1 if time.time() < self.spawn_immune_until else 0
+        return [self.aid, round(self.pos[0], 2), round(self.pos[1], 2), round(self.pos[2], 2), immune]
 
 
 class Boss:
@@ -428,7 +432,7 @@ class Bee:
 
 class NeonAnt:
     """Синий неоновый муравей: держит дистанцию (кайтит) и стреляет шкибиди-зельем."""
-    __slots__ = ("nid", "pos", "dir", "h", "slow_until", "hp", "shoot_at")
+    __slots__ = ("nid", "pos", "dir", "h", "slow_until", "hp", "shoot_at", "spawn_immune_until")
 
     def __init__(self, nid, now):
         self.nid = nid
@@ -436,6 +440,7 @@ class NeonAnt:
         self.hp = C.NEON_ANT_HP
         self.h = 0.0
         self.shoot_at = now + random.uniform(0.6, C.NEON_ANT_SHOOT_INTERVAL)
+        self.spawn_immune_until = 0.0
         self._reset_pos()
 
     def _reset_pos(self):
@@ -486,7 +491,8 @@ class NeonAnt:
         self.pos[0], self.pos[1] = _clamp_to_arena(self.pos[0], self.pos[1])
 
     def snapshot(self):
-        return [self.nid, round(self.pos[0], 2), round(self.pos[1], 2), round(self.h, 1), self.hp]
+        immune = 1 if time.time() < self.spawn_immune_until else 0
+        return [self.nid, round(self.pos[0], 2), round(self.pos[1], 2), round(self.h, 1), self.hp, immune]
 
 
 class AntShot:
@@ -977,25 +983,41 @@ class World:
         self.events.append({"t": "event", "kind": "ultimate", "by": pl.name})
 
     # --- волны ---
+    def _far_spawn_point(self):
+        """Случайная свободная точка не ближе ANT_SPAWN_MIN_DIST от любого живого игрока."""
+        min_d2 = C.ANT_SPAWN_MIN_DIST ** 2
+        alive_pos = [pl.pos for pl in self.players.values() if not pl.dead]
+        pts = self.nav.free_points
+        sample = random.sample(pts, min(len(pts), 80))
+        for x, y in sample:
+            if all((x - p[0]) ** 2 + (y - p[1]) ** 2 >= min_d2 for p in alive_pos):
+                return (x, y)
+        return self.nav.random_free_point()
+
     def _start_wave(self):
         self.wave += 1
+        now = time.time()
+        immune_until = now + C.WAVE_IMMUNE_TIME
         count = min(C.ANT_COUNT, C.WAVE_START + (self.wave - 1) * C.WAVE_GROWTH)
         for _ in range(count):
-            self.ants[self._next_ant_id] = Ant(self._next_ant_id,
-                                               self.nav.random_free_point())
+            ant = Ant(self._next_ant_id, self._far_spawn_point())
+            ant.spawn_immune_until = immune_until
+            self.ants[self._next_ant_id] = ant
             self._next_ant_id += 1
         # синие неоновые муравьи-стрелки — появляются после 3-й волны
         if self.wave >= C.NEON_ANT_FROM_WAVE:
             ncount = min(C.NEON_ANT_MAX,
                          C.NEON_ANT_BASE + (self.wave - C.NEON_ANT_FROM_WAVE) * C.NEON_ANT_GROWTH)
-            now = time.time()
             for _ in range(ncount):
-                self.neon_ants[self._next_neon_id] = NeonAnt(self._next_neon_id, now)
+                na = NeonAnt(self._next_neon_id, now)
+                na.spawn_immune_until = immune_until
+                na.pos = list(self._far_spawn_point()) + [0.0]
+                self.neon_ants[self._next_neon_id] = na
                 self._next_neon_id += 1
             self.events.append({"t": "event", "kind": "neon_wave",
                                 "wave": self.wave, "count": ncount})
         if self.wave % C.BOSS_EVERY == 0:
-            self.boss = Boss(time.time())
+            self.boss = Boss(now)
             self.events.append({"t": "event", "kind": "boss_spawn", "wave": self.wave})
         self.events.append({"t": "event", "kind": "wave", "wave": self.wave, "count": count})
         self._wave_pending = False
@@ -1457,18 +1479,18 @@ class World:
 
     def _touch_damage(self, dt, now):
         for pl in self.players.values():
-            if pl.hp <= 0 or now < pl.touch_inv_until:
-                continue                      # короткий кулдаун на урон от касаний
+            if pl.hp <= 0 or now < pl.touch_inv_until or now < pl.respawn_immune_until:
+                continue                      # короткий кулдаун или неуязвимость после воскрешения
             touch_dmg = 0
             # во время ЩЕЛИ тараканы не кусают — они просто ржут над игроком
             if not self.slit_event_active:
                 for ant in self.ants.values():
-                    if _dist2(pl.pos, ant.pos) < C.ANT_TOUCH_RANGE ** 2:
+                    if now >= ant.spawn_immune_until and _dist2(pl.pos, ant.pos) < C.ANT_TOUCH_RANGE ** 2:
                         touch_dmg = max(touch_dmg, C.ANT_TOUCH_DAMAGE)
                         break
             if not touch_dmg:
                 for na in self.neon_ants.values():
-                    if _dist2(pl.pos, na.pos) < C.ANT_TOUCH_RANGE ** 2:
+                    if now >= na.spawn_immune_until and _dist2(pl.pos, na.pos) < C.ANT_TOUCH_RANGE ** 2:
                         touch_dmg = max(touch_dmg, C.ANT_TOUCH_DAMAGE)
                         break
             if self.boss and _dist2(pl.pos, self.boss.pos) < (C.ANT_TOUCH_RANGE + 1.5) ** 2:
@@ -1486,6 +1508,8 @@ class World:
 
     def _hurt(self, target, dmg, now, attacker_id):
         if target.dead:
+            return
+        if now < target.respawn_immune_until:
             return
         target.hp -= dmg
         atk = self.players.get(attacker_id) if attacker_id is not None else None
@@ -1511,6 +1535,7 @@ class World:
                 pl.hp = C.PLAYER_MAX_HP
                 # респавн рядом с центральной статуей (витрина у (0,0))
                 pl.pos = [random.uniform(-3, 3), random.uniform(4, 8), 0.0]
+                pl.respawn_immune_until = now + C.RESPAWN_IMMUNE_TIME
 
     def _check_wipe(self, now):
         """Если ВСЕ игроки мертвы:

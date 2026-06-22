@@ -229,6 +229,13 @@ class RemoteAvatar:
             label = {"flex": "ФЛЕКС!", "wave": "привет!", "dance": "ТАНЦЫ!"}.get(emote, emote)
             self.emote_tn.setText(label)
             self.emote_np.show()
+        rimm = snap.get("rimm", 0.0) > 0
+        if rimm:
+            self.root.setTransparency(TransparencyAttrib.MAlpha)
+            self.root.setAlphaScale(0.35)
+        else:
+            self.root.clearTransparency()
+            self.root.setAlphaScale(1.0)
 
     def destroy(self):
         self.root.removeNode()
@@ -572,6 +579,7 @@ class Roblox2(ShowBase):
         self.alive_ants = 0
         self.boss_info = None
         self.is_dead = False
+        self._respawn_immune = False  # неуязвимость после возрождения (из снапшота)
         self.boss_bar = None       # WorldBar — шкала Уважения над боссом
         self.lit_energy = 0        # запас LIT ENERGY (из снапшота)
         self.bee_time = 0.0        # сколько секунд ещё доступны пчёлы (из снапшота)
@@ -2221,6 +2229,12 @@ class Roblox2(ShowBase):
         emote = (getattr(self, "_my_snapshot", None) or {}).get("emote")
         self.local_worm.update(dt, moving=moving, on_ground=self.on_ground,
                                vz=self.vz, emote=emote, dead=self.is_dead)
+        if getattr(self, "_respawn_immune", False):
+            self.local_worm.root.setTransparency(TransparencyAttrib.MAlpha)
+            self.local_worm.root.setAlphaScale(0.35)
+        else:
+            self.local_worm.root.clearTransparency()
+            self.local_worm.root.setAlphaScale(1.0)
 
         # тряска камеры (взрывы/победа над щелью) — затухает
         sx = sy = sz = 0.0
@@ -2529,6 +2543,7 @@ class Roblox2(ShowBase):
                     self._hurt_alpha = 0.75
                 self._prev_hp = hp
                 self.lit_energy = snap.get("lit", 0)
+                self._respawn_immune = snap.get("rimm", 0.0) > 0
                 server_bee = snap.get("bees", 0.0)
                 if server_bee > 0:
                     self._pending_use_lit = False  # сервер подтвердил активацию пчёл
@@ -2653,7 +2668,8 @@ class Roblox2(ShowBase):
         # тараканы (волнами появляются и исчезают)
         seen_ants = set()
         for ant in msg.get("ants", []):
-            aid, ax, ay, az = ant
+            aid, ax, ay, az = ant[0], ant[1], ant[2], ant[3]
+            ant_immune = ant[4] if len(ant) > 4 else 0
             seen_ants.add(aid)
             node = self.ant_nodes.get(aid)
             if node is None:
@@ -2666,6 +2682,12 @@ class Roblox2(ShowBase):
             if dx * dx + dy * dy > 1e-5:
                 node.setH(math.degrees(math.atan2(-dx, dy)))
             self._ant_prev[aid] = (ax, ay)
+            if ant_immune:
+                node.setTransparency(TransparencyAttrib.MAlpha)
+                node.setAlphaScale(0.35)
+            else:
+                node.setTransparency(TransparencyAttrib.MNone)
+                node.setAlphaScale(1.0)
         for aid in list(self.ant_nodes):
             if aid not in seen_ants:
                 self.ant_nodes[aid].removeNode()
@@ -2677,6 +2699,7 @@ class Roblox2(ShowBase):
         for na in msg.get("neon_ants", []):
             nid, nx, ny, nh = na[:4]
             hp = na[4] if len(na) > 4 else C.NEON_ANT_HP
+            neon_immune = na[5] if len(na) > 5 else 0
             seen_neon.add(nid)
             node = self.neon_ant_nodes.get(nid)
             if node is None:
@@ -2693,6 +2716,12 @@ class Roblox2(ShowBase):
                 bar = self._neon_hp_bars[nid]
                 bar.set_pos(nx, ny, 2.4)
                 bar.set_fraction(hp / C.NEON_ANT_HP)
+            if neon_immune:
+                node.setTransparency(TransparencyAttrib.MAlpha)
+                node.setAlphaScale(0.35)
+            else:
+                node.setTransparency(TransparencyAttrib.MNone)
+                node.setAlphaScale(1.0)
         for nid in list(self.neon_ant_nodes):
             if nid not in seen_neon:
                 self.neon_ant_nodes[nid].removeNode()

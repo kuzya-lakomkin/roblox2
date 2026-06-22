@@ -461,6 +461,8 @@ class Roblox2(ShowBase):
             self._roach_step_snd.setVolume(self._sfx_vol)
         if hasattr(self, "_roach_laugh_snd") and self._roach_laugh_snd:
             self._roach_laugh_snd.setVolume(self._sfx_vol)
+        if hasattr(self, "_bee_snd") and self._bee_snd:
+            self._bee_snd.setVolume(0.55 * self._sfx_vol)
         self._save_settings()
 
     def _enter_hub(self):
@@ -587,6 +589,7 @@ class Roblox2(ShowBase):
         # звук (музыка инициализируется в __init__ и играет уже в меню)
         self._worm_step_snd = None
         self._roach_step_snd = None
+        self._bee_snd = None
         self._prev_hp = C.PLAYER_MAX_HP
         self._prev_boss_respect = 0
         self._hurt_cd = 0.0          # антиспам звука урона
@@ -771,7 +774,9 @@ class Roblox2(ShowBase):
             node = getattr(self, attr, None)
             if node:
                 try: node.destroy()
-                except Exception: pass
+                except Exception:
+                    try: node.removeNode()
+                    except Exception: pass
                 setattr(self, attr, None)
         if getattr(self, "_tut_scene_root", None):
             try: self._tut_scene_root.removeNode()
@@ -859,6 +864,7 @@ class Roblox2(ShowBase):
         self._tut_neon_was_alive = False
         self._tut_victory_t = 0.0
         self._tut_kill_pos = [0.0, 28.0, 0.0]
+        self._tut_gas_held_t = 0.0
         self._tut_world = World()
         self.my_id = 1
         self._tut_world.add_player(1, 'Tutorial')
@@ -868,19 +874,44 @@ class Roblox2(ShowBase):
         p = self._tut_world.players[1]
         p.touch_inv_until = _time.time() + 1e9
         if hasattr(self, '_tut_overlay') and self._tut_overlay:
-            self._tut_overlay.destroy()
-        self._tut_overlay = DirectFrame(
-            frameColor=(0, 0, 0, 0.68), frameSize=(-1.0, 1.0, -0.14, 0.14),
-            pos=(0, 0, -0.80), parent=self.aspect2d,
-        )
-        f = self.fonts.get('ui')
-        kw = {'text_font': f} if f else {}
-        self._tut_text = DirectLabel(
-            parent=self._tut_overlay, text='',
-            scale=0.050, pos=(0, 0, 0.01),
-            frameColor=(0, 0, 0, 0), text_fg=(1, 1, 0.6, 1),
-            text_wordwrap=34, **kw,
-        )
+            try: self._tut_overlay.destroy()
+            except Exception:
+                try: self._tut_overlay.removeNode()
+                except Exception: pass
+        # градиентная полоса: снизу непрозрачная, сверху прозрачная
+        from panda3d.core import PNMImage, CardMaker, PandaNode as _PNode
+        grad = PNMImage(4, 64, 4)
+        for _y in range(64):
+            _a = (_y / 63.0) ** 0.55 * 0.90
+            for _x in range(4):
+                grad.setXel(_x, _y, 0, 0, 0)
+                grad.setAlpha(_x, _y, _a)
+        from panda3d.core import Texture as _Tex
+        grad_tex = _Tex("tut_grad")
+        grad_tex.load(grad)
+        grad_tex.setWrapU(_Tex.WMClamp)
+        grad_tex.setWrapV(_Tex.WMClamp)
+        tut_root = self.aspect2d.attachNewNode(_PNode("tut_ui"))
+        cm = CardMaker("tut_bar")
+        cm.setFrame(-2.1, 2.1, -1.02, -0.58)
+        bar_np = tut_root.attachNewNode(cm.generate())
+        bar_np.setTexture(grad_tex)
+        bar_np.setTransparency(TransparencyAttrib.MAlpha)
+        bar_np.setBin("fixed", 44)
+        bar_np.setDepthTest(False); bar_np.setDepthWrite(False)
+        from panda3d.core import TextNode as _TN
+        self._tut_text_node = _TN("tut_text")
+        self._tut_text_node.setAlign(_TN.ACenter)
+        self._tut_text_node.setWordwrap(54)
+        _f = self.fonts.get('ui')
+        if _f: self._tut_text_node.setFont(_f)
+        self._tut_text_np = tut_root.attachNewNode(self._tut_text_node)
+        self._tut_text_np.setScale(0.078)
+        self._tut_text_np.setPos(0, 0, -0.83)
+        self._tut_text_np.setColorScale(1, 1, 0.65, 1)
+        self._tut_text_np.setBin("fixed", 45)
+        self._tut_text_np.setDepthTest(False); self._tut_text_np.setDepthWrite(False)
+        self._tut_overlay = tut_root
         self._tut_black = DirectFrame(
             frameColor=(0, 0, 0, 0), frameSize=(-2, 2, -2, 2),
             pos=(0, 0, 0), parent=self.aspect2d, sortOrder=100,
@@ -888,6 +919,7 @@ class Roblox2(ShowBase):
         self._tut_black.hide()
         self._tut_steps = [
             ('walk',       'Иди вперёд по коридору! WASD — движение, мышь — обзор.'),
+            ('gas',        'Удерживай Shift — активируй ГАЗ и беги в два раза быстрее!'),
             ('look',       'Теперь оглянись назад — осмотрись вокруг.'),
             ('ant',        'ТАРАКАН! Зажми ЛКМ — стреляй сиропом [1]!'),
             ('pickup_lit', 'Подбери LIT ENERGY — подойди к светящемуся предмету!'),
@@ -904,7 +936,7 @@ class Roblox2(ShowBase):
         self._tut_step = idx
         if idx >= len(self._tut_steps):
             return
-        self._tut_text['text'] = self._tut_steps[idx][1]
+        self._tut_text_node.setText(self._tut_steps[idx][1])
         w = self._tut_world; now = _time.time()
         step_key = self._tut_steps[idx][0]
         if step_key == 'look':
@@ -1034,12 +1066,14 @@ class Roblox2(ShowBase):
         w.events.clear()
         step_key = (self._tut_steps[self._tut_step][0]
                     if self._tut_step < len(self._tut_steps) else '_done')
-        if self._tut_ant_was_alive and not w.ants and not w.drops:
+        if self._tut_ant_was_alive and not w.ants:
             self._tut_ant_was_alive = False
+            w.drops.clear()  # убрать случайные дропы сервера
             did = w._next_drop_id; w._next_drop_id += 1
             w.drops[did] = {'pos': list(self._tut_kill_pos), 'kind': 'lit_energy'}
-        if self._tut_neon_was_alive and not w.neon_ants and not w.drops:
+        if self._tut_neon_was_alive and not w.neon_ants:
             self._tut_neon_was_alive = False
+            w.drops.clear()  # убрать случайные дропы сервера
             did = w._next_drop_id; w._next_drop_id += 1
             w.drops[did] = {'pos': list(self._tut_kill_pos), 'kind': 'health'}
         snap = self._tut_build_snapshot()
@@ -1053,12 +1087,18 @@ class Roblox2(ShowBase):
         player_lit = (pl.lit_energy if pl else 0)
         if step_key == 'walk' and self.pos.y > 14 and moved > 0.01:
             self._tut_next()
+        elif step_key == 'gas':
+            if self.keys.get("gas", False):
+                self._tut_gas_held_t += dt
+                if self._tut_gas_held_t >= 1.2:
+                    self._tut_next()
+            else:
+                self._tut_gas_held_t = 0.0
         elif step_key == 'look' and h_delta > 80:
             self._tut_next()
         elif step_key == 'ant' and not w.ants and not self._tut_ant_was_alive:
             self._tut_next()
         elif step_key == 'pickup_lit' and (player_lit > 0 or self.bee_time > 0):
-            self._play_oneshot(AC.SFX_JOIN_PHASE1, volume=0.7)
             self._tut_next()
         elif step_key == 'neon' and not w.neon_ants and not self._tut_neon_was_alive:
             self._tut_next()
@@ -1069,6 +1109,7 @@ class Roblox2(ShowBase):
 
     def _tut_next(self):
         self._tut_timer = 0.0
+        self._play_oneshot(AC.SFX_TUT_STEP, volume=0.85)
         next_idx = self._tut_step + 1
         if next_idx < len(self._tut_steps):
             self._tut_set_step(next_idx)
@@ -1233,15 +1274,19 @@ class Roblox2(ShowBase):
             self._hurt_vignette.setColor(1, 1, 1, self._hurt_alpha)
         else:
             self._hurt_vignette.hide()
-        # голубой пульсирующий вигнет пока активен LIT ENERGY
+        # голубой пульсирующий вигнет + гул пчёл пока активен LIT ENERGY
         if self.bee_time > 0:
             self._bee_vign_t += dt
             pulse = 0.22 + 0.10 * math.sin(self._bee_vign_t * 3.5)
             self._bee_vignette.show()
             self._bee_vignette.setColor(1, 1, 1, pulse)
+            self._set_loop("_bee_snd", AC.SFX_BEE_LOOP, True)
+            if self._bee_snd:
+                self._bee_snd.setVolume(0.55 * self._sfx_vol)
         else:
             self._bee_vignette.hide()
             self._bee_vign_t = 0.0
+            self._set_loop("_bee_snd", AC.SFX_BEE_LOOP, False)
 
     def _apply_blast_knockback(self, pos):
         """Отброс ЛОКАЛЬНОГО игрока от взрыва босса (игрок авторитетен над позицией)."""
@@ -1816,6 +1861,7 @@ class Roblox2(ShowBase):
         self._set_loop("_worm_step_snd", AC.SFX_WORM_STEP, False)
         self._set_loop("_roach_step_snd", AC.SFX_COCKROACH_STEP, False)
         self._set_loop("_roach_laugh_snd", AC.SFX_COCKROACH_LAUGH, False)
+        self._set_loop("_bee_snd", AC.SFX_BEE_LOOP, False)
 
     # --- звук струи: START один раз, затем зацикленный LOOP ---
     def _spray_paths(self):
@@ -2473,8 +2519,10 @@ class Roblox2(ShowBase):
                 self.bee_time = server_bee
                 self.player_slow = snap.get("slow", 0.0)
                 self.cups = snap.get("cups", 0)
-                # пчёлы кончились — вернуть сироп (но не если ждём подтверждения от сервера)
-                if self.weapon == "hive" and self.bee_time <= 0 and not self._pending_use_lit:
+                # пчёлы кончились — вернуть сироп
+                # не сбрасывать если: ждём подтверждения сервера ИЛИ есть LIT ENERGY (выстрел активирует)
+                if (self.weapon == "hive" and self.bee_time <= 0
+                        and not self._pending_use_lit and self.lit_energy <= 0):
                     self.weapon = "syrup"
                 continue
             seen.add(pid)

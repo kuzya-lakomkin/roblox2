@@ -116,6 +116,8 @@ SFX_WEAPON_SYRUP = _s("sfx_weapon_syrup.wav")   # переключение на 
 SFX_WEAPON_MAYO  = _s("sfx_weapon_mayo.wav")    # переключение на майонез
 SFX_WEAPON_HIVE  = _s("sfx_weapon_hive.wav")    # переключение на улей
 SFX_LIT_ENERGY = _s("sfx_lit_energy.wav")  # активация LIT ENERGY (один раз при использовании)
+SFX_BEE_LOOP   = _s("sfx_bee_loop.wav")    # фоновый гул пчёл пока активен LIT ENERGY
+SFX_TUT_STEP   = _s("sfx_tut_step.wav")    # звук перехода на следующий шаг обучения
 
 # ЩЕЛЬ (настенный враг). Нет файла -> тихо.
 SFX_SLIT_SPAWN = _s("sfx_slit_spawn.wav")        # появление щели

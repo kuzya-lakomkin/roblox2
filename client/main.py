@@ -18,8 +18,8 @@ from panda3d.core import (AmbientLight, AntialiasAttrib, AudioSound, CardMaker,
                           WindowProperties, loadPrcFileData)
 
 from common import config as C
-from common.citydata import (building_rects, resolve_collision, support_z,
-                             on_jump_pad, CUP_SPOTS)
+from common.citydata import (building_rects, in_any_building, resolve_collision,
+                             support_z, on_jump_pad, CUP_SPOTS, WALL_HEIGHT)
 from client.network import NetworkClient
 from client.primitives import make_box
 from client.procgen import (make_sphere, make_cockroach, make_bee, make_boss,
@@ -80,7 +80,7 @@ else:  # high
 
 _assets_mod._ANISO = {"low": 1, "medium": 4, "high": 8}.get(_GFX_QUALITY, 8)
 
-MOUSE_SENS = 0.12
+MOUSE_SENS = 0.12  # дефолт (переопределяется self._mouse_sens из настроек)
 # цвета червей в той же синтвейв-гамме (циан/розовый/фиолет/тил/сине-фиолет)
 PLAYER_COLORS = [
     (0.16, 0.89, 0.91, 1), (1.00, 0.30, 0.55, 1), (0.62, 0.31, 0.87, 1),
@@ -349,8 +349,9 @@ class Roblox2(ShowBase):
             self._auth_server = settings["auth_server"]
         self._saved_login    = settings.get("saved_login", "")
         self._saved_password = settings.get("saved_password", "")
-        self._music_vol = float(settings.get("music_vol", 0.5))
-        self._sfx_vol   = float(settings.get("sfx_vol",   1.0))
+        self._music_vol   = float(settings.get("music_vol", 0.5))
+        self._sfx_vol     = float(settings.get("sfx_vol",   1.0))
+        self._mouse_sens  = float(settings.get("mouse_sens", MOUSE_SENS))
         self.gfx_quality = _GFX_QUALITY  # уже применено в PRC до создания окна
         self.my_id = None
         self.net = None
@@ -429,6 +430,7 @@ class Roblox2(ShowBase):
             "saved_password": "",
             "music_vol": 0.5,
             "sfx_vol": 1.0,
+            "mouse_sens": MOUSE_SENS,
             "gfx_quality": "medium",
         }
         try:
@@ -455,6 +457,7 @@ class Roblox2(ShowBase):
                     "saved_password": self._saved_password,
                     "music_vol": self._music_vol,
                     "sfx_vol": self._sfx_vol,
+                    "mouse_sens": self._mouse_sens,
                     "gfx_quality": getattr(self, "_pending_gfx_quality", self.gfx_quality),
                 }, f, indent=2, ensure_ascii=False)
         except Exception:
@@ -610,6 +613,8 @@ class Roblox2(ShowBase):
         self._notices = []          # [(node, timer, duration)]
         self._state_accum = 0.0
         self._building_rects = building_rects(pad=0.0)
+        self._cam_wall_rects = building_rects(pad=0.4)  # для коллизии камеры
+        self._3p_shoot_dir = None  # (fx,fy,fz) — направление стрельбы в 3-м лице
         self.wave = 0
         self.alive_ants = 0
         self.boss_info = None
@@ -1833,11 +1838,14 @@ class Roblox2(ShowBase):
         if not self._can_fire():
             return
         import random
-        rad_h = math.radians(self.heading)
-        rad_p = math.radians(self.pitch)
-        fx = -math.sin(rad_h) * math.cos(rad_p)
-        fy = math.cos(rad_h) * math.cos(rad_p)
-        fz = math.sin(rad_p)
+        if self.camera_mode == "third" and self._3p_shoot_dir:
+            fx, fy, fz = self._3p_shoot_dir
+        else:
+            rad_h = math.radians(self.heading)
+            rad_p = math.radians(self.pitch)
+            fx = -math.sin(rad_h) * math.cos(rad_p)
+            fy = math.cos(rad_h) * math.cos(rad_p)
+            fz = math.sin(rad_p)
         if self.weapon in ("syrup", "mayo"):   # разброс капель = вид струи/спрея
             s = C.PROJECTILE_SPREAD
             fx += random.uniform(-s, s)
@@ -2038,8 +2046,8 @@ class Roblox2(ShowBase):
         if self.win.movePointer(0, cx, cy):
             dx = md.getX() - cx
             dy = md.getY() - cy
-            self.heading -= dx * MOUSE_SENS
-            self.pitch = max(-60, min(80, self.pitch - dy * MOUSE_SENS))
+            self.heading -= dx * self._mouse_sens
+            self.pitch = max(-60, min(80, self.pitch - dy * self._mouse_sens))
 
     # ---------- главный цикл ----------
     def update(self, task):
@@ -2303,11 +2311,36 @@ class Roblox2(ShowBase):
         focus_z = self.pos.z + 2.2
         elev = min(math.radians(75), math.radians(self.pitch + 16))  # наклон сверху
         dist = 11.0
-        fx, fy = -math.sin(rad_h), math.cos(rad_h)   # «вперёд»
+        fwd_x, fwd_y = -math.sin(rad_h), math.cos(rad_h)   # «вперёд»
         horiz = dist * math.cos(elev)
-        camx = self.pos.x - fx * horiz
-        camy = self.pos.y - fy * horiz
+        camx = self.pos.x - fwd_x * horiz
+        camy = self.pos.y - fwd_y * horiz
         camz = max(1.2, focus_z + dist * math.sin(elev))
+
+        # коллизия камеры со стенами: бинарный поиск по лучу игрок→камера
+        wall_rects = getattr(self, "_cam_wall_rects", None)
+        if wall_rects and camz < WALL_HEIGHT and in_any_building(camx, camy, wall_rects):
+            px, py = self.pos.x, self.pos.y
+            lo, hi = 0.05, 1.0
+            for _ in range(7):
+                mid_t = (lo + hi) / 2
+                mx = px + (camx - px) * mid_t
+                my = py + (camy - py) * mid_t
+                if in_any_building(mx, my, wall_rects):
+                    hi = mid_t
+                else:
+                    lo = mid_t
+            camx = px + (camx - px) * lo
+            camy = py + (camy - py) * lo
+            camz = max(1.2, focus_z + lo * dist * math.sin(elev))
+
+        # направление стрельбы в 3-м лице = куда смотрит камера (из камеры к точке фокуса)
+        _dx = self.pos.x - camx
+        _dy = self.pos.y - camy
+        _dz = focus_z - camz
+        _dlen = math.sqrt(_dx * _dx + _dy * _dy + _dz * _dz) or 1.0
+        self._3p_shoot_dir = (_dx / _dlen, _dy / _dlen, _dz / _dlen)
+
         self.camera.setPos(camx + sx, camy + sy, camz + sz)
         self.camera.lookAt(self.pos.x, self.pos.y, focus_z)
 

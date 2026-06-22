@@ -212,11 +212,20 @@ WORMCHELLO_PROJ_LIFE = 3.2       # время жизни снаряда
 WORMCHELLO_PROJ_DAMAGE = 18      # урон одного снаряда
 WORMCHELLO_TOUCH_DAMAGE = 28     # урон от прямого касания при ползании
 WORMCHELLO_MINION_INTERVAL = 7.0 # секунд между вызовом прихвостней
-WORMCHELLO_MINION_ANTS = 4       # обычных тараканов за вызов
+WORMCHELLO_MINION_ANTS = 2       # обычных тараканов за вызов (было 4)
 WORMCHELLO_MINION_NEONS = 1      # синих стрелков за вызов
 WORMCHELLO_SCORE = 50            # очки победителям
+WORMCHELLO_DESCEND_SPEED = 12.0  # скорость погружения в нору
 WORMCHELLO_HOLES = [             # 4 норы около входов в центральную арену
     (0.0, 22.0), (0.0, -22.0), (22.0, 0.0), (-22.0, 0.0)
+]
+LINA_SPHERE_HP = 150             # HP каждой сферы ЛИНА
+LINA_SPHERE_RADIUS = 1.8         # радиус попадания по сфере
+LINA_SPHERE_POSITIONS = [        # позиции 4 сфер ЛИНА (углы центральной площади)
+    (12.0,  12.0, 5.0),
+    (-12.0, 12.0, 5.0),
+    (-12.0, -12.0, 5.0),
+    (12.0, -12.0, 5.0),
 ]
 
 # --- Авторизация ---

@@ -391,6 +391,7 @@ def make_wormchello_head(face_texture=None):
         strand.reparentTo(root)
         strand.setPos(sx, sy, sz)
         strand.setHpr(rz, rx, 0)
+        strand.setLightOff(1)  # full-bright чтобы волосы были видны
 
     # белки глаз (два крупных шара по бокам переда)
     white = (0.96, 0.94, 0.90, 1)
@@ -425,6 +426,20 @@ def make_wormchello_segment(radius=1.0, color=(0.88, 0.68, 0.54, 1)):
     np = make_sphere(radius, 8, 12, color)
     np.setScale(1.0, 1.0, 0.82)
     return np
+
+
+def make_lina_sphere():
+    """Светящаяся сфера ЛИНА — щит первой фазы ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО."""
+    root = NodePath("lina_sphere")
+    # ядро — яркий полный блик
+    core = make_sphere(0.75, 14, 18, (0.25, 0.80, 1.0, 1.0))
+    core.reparentTo(root)
+    core.setLightOff(1)
+    # внешняя оболочка чуть больше и темнее
+    shell = make_sphere(1.05, 10, 14, (0.15, 0.55, 0.90, 1.0))
+    shell.reparentTo(root)
+    shell.setLightOff(1)
+    return root
 
 
 def make_boss(scale=3.0):

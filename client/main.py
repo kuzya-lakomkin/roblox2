@@ -595,8 +595,14 @@ class Roblox2(ShowBase):
         self.wc_bar = None            # WorldBar HP
         self.worm_shot_nodes = {}     # wsid -> NodePath
         self._wc_hole_nodes = []      # 4 тёмных диска нор (кат-сцена)
+        self._wc_lina_nodes = []      # 4 сферы ЛИНА
+        self._wc_lina_bars = []       # WorldBar над каждой сферой
         self._prev_wc_hp = 0
         self._wc_roar_cd = 0.0       # кулдаун реплик
+        self._wc_pos_interp = [0.0, 0.0, -4.0]   # интерполяция позиции
+        self._wc_h_interp = 0.0                   # интерполяция heading
+        self._wc_night_alpha = 0.0
+        self._wc_lina_pulse_t = 0.0  # таймер пульса сфер
         self.bk_boss_node = None
         self._bk_is_model = False
         self.bk_boss_bar = None
@@ -760,6 +766,10 @@ class Roblox2(ShowBase):
             self._bk_night_overlay.hide()
         self._bk_night_alpha = 0.0
         self._bk_filter_keep = False
+        if hasattr(self, "_wc_night_overlay") and self._wc_night_overlay:
+            self._wc_night_overlay.setColor(0.08, 0.0, 0.18, 0)
+            self._wc_night_overlay.hide()
+        self._wc_night_alpha = 0.0
         for n in self.cup_spot_nodes:
             n.removeNode()
         self.cup_spot_nodes = []
@@ -1696,6 +1706,18 @@ class Roblox2(ShowBase):
         self._bk_night_overlay.setDepthWrite(False)
         self._bk_night_overlay.hide()
 
+        # тёмно-фиолетовый фильтр Червячелло (немного другой оттенок — глубже)
+        self._wc_night_alpha = 0.0
+        cm_wc = CardMaker("wc_night")
+        cm_wc.setFrameFullscreenQuad()
+        self._wc_night_overlay = self.render2d.attachNewNode(cm_wc.generate())
+        self._wc_night_overlay.setTransparency(TransparencyAttrib.MAlpha)
+        self._wc_night_overlay.setColor(0.08, 0.0, 0.18, 0)
+        self._wc_night_overlay.setBin("fixed", 18)   # под BK фильтром
+        self._wc_night_overlay.setDepthTest(False)
+        self._wc_night_overlay.setDepthWrite(False)
+        self._wc_night_overlay.hide()
+
         # зеленоватый вигнет по краям при замедлении газом папани
         self._vign_alpha = 0.0
         vt = self._make_vignette_texture((0.35, 0.95, 0.4))
@@ -2095,6 +2117,7 @@ class Roblox2(ShowBase):
     # ---------- главный цикл ----------
     def update(self, task):
         dt = globalClock.getDt()
+        self._last_dt = dt
         # пока есть подключение, мир продолжает жить — даже в паузе/настройках
         # (мультиплеер не замораживается; пауза лишь размывает фон и снимает управление)
         live = self.world_built and self.net is not None
@@ -2145,6 +2168,7 @@ class Roblox2(ShowBase):
                 self.vz = 0.0
                 self.on_ground = True
         self._update_bk_cutscene(dt)
+        self._update_wc_filter(dt)
         self._update_bk_death_cutscene(dt)
         self._update_bk_wipe(dt)
         self._update_notices(dt)
@@ -2575,6 +2599,19 @@ class Roblox2(ShowBase):
             self._play_music(AC.MUSIC_PHASE1)
         elif kind == "wormchello_minions":
             self._show_notice("Червячелло вызывает тараканов!", color=(0.9, 0.5, 0.1, 1), duration=2.0)
+        elif kind == "wormchello_lina_hit":
+            pos = msg.get("pos", [0, 0, 5])
+            self.particles.burst(pos, count=20,
+                                 color=(0.25, 0.80, 1.0, 1), speed=6.0,
+                                 size=0.35, life=0.8, grav=-5.0, spread=1.4, up=0.8)
+            # если все сферы мертвы — сообщение о снятии щита
+            wc = self.wormchello_info
+            if wc:
+                lina = wc.get("lina", [])
+                remaining = sum(1 for d in lina if len(d) > 1 and d[1])
+                if remaining <= 1:  # эта сфера последняя
+                    self._show_notice("Щит снят! Атакуй ЧЕРВЯЧЕЛЛО!", color=(1.0, 0.6, 0.1, 1), duration=3.5)
+            self._shake(0.3)
         elif kind == "smile_roach_killed":
             pos = msg.get("pos", [0, 0])
             self.particles.burst([pos[0], pos[1], 0.4], count=10,
@@ -3195,8 +3232,10 @@ class Roblox2(ShowBase):
     # ---------------------------------------------------------------- Wormchello
 
     def _init_wormchello_nodes(self):
-        from client.procgen import make_wormchello_head, make_wormchello_segment
+        from client.procgen import (make_wormchello_head, make_wormchello_segment,
+                                    make_lina_sphere)
         from client.assets import load_texture, texture_exists
+        from common.config import LINA_SPHERE_POSITIONS
         face_tex = None
         if texture_exists(AC.WORMCHELLO_FACE_TEXTURE):
             face_tex = load_texture(self.loader, AC.WORMCHELLO_FACE_TEXTURE)
@@ -3219,6 +3258,23 @@ class Roblox2(ShowBase):
                                font=self.fonts.get("world"))
         # 4 норы — тёмные диски в полу
         self._spawn_hole_nodes()
+        # 4 сферы ЛИНА
+        self._wc_lina_nodes = []
+        self._wc_lina_bars = []
+        for i, (lx, ly, lz) in enumerate(LINA_SPHERE_POSITIONS):
+            sph = make_lina_sphere()
+            sph.reparentTo(self.render)
+            sph.setPos(lx, ly, lz)
+            sph.hide()
+            self._wc_lina_nodes.append(sph)
+            bar = WorldBar(self.render,
+                           label=f"ЛИНА {i+1}",
+                           width=1.8, height=0.28,
+                           fill_color=(0.25, 0.80, 1.0, 1),
+                           font=self.fonts.get("world"))
+            bar.set_pos(lx, ly, lz + 2.2)
+            bar.set_fraction(1.0)
+            self._wc_lina_bars.append(bar)
 
     def _spawn_hole_nodes(self):
         from client.procgen import make_cylinder
@@ -3246,8 +3302,19 @@ class Roblox2(ShowBase):
             if n:
                 n.removeNode()
         self._wc_hole_nodes = []
+        for n in self._wc_lina_nodes:
+            if n:
+                n.removeNode()
+        self._wc_lina_nodes = []
+        for b in self._wc_lina_bars:
+            if b:
+                b.destroy()
+        self._wc_lina_bars = []
+        self._wc_pos_interp = [0.0, 0.0, -4.0]
+        self._wc_h_interp = 0.0
 
     def _update_wormchello_rendering(self):
+        import math as _m
         info = self.wormchello_info
         if not info:
             if self._wc_head_node is not None:
@@ -3262,55 +3329,120 @@ class Roblox2(ShowBase):
         hp, max_hp = info["hp"], info["max"]
         ph = info.get("phase", 1)
         trail = info.get("trail", [])
+        target_h = info.get("h", 0.0)
+        lina_data = info.get("lina", [])
 
-        visible = (state != "UNDERGROUND")
+        # плавная интерполяция позиции и поворота (только когда видно)
+        visible = state not in ("UNDERGROUND",)
+        if visible:
+            lerp = min(1.0, 10.0 * getattr(self, "_last_dt", 0.033))
+            for i in range(3):
+                self._wc_pos_interp[i] += (info["pos"][i] - self._wc_pos_interp[i]) * lerp
+            dh = target_h - self._wc_h_interp
+            while dh > 180: dh -= 360
+            while dh < -180: dh += 360
+            self._wc_h_interp += dh * lerp
+        else:
+            # пока под землёй — сбросить интерполятор к реальной позиции
+            self._wc_pos_interp[:] = list(info["pos"])
+            self._wc_h_interp = target_h
 
-        # голова
+        ipx, ipy, ipz = self._wc_pos_interp
+
+        # --- ГОЛОВА ---
         if visible:
             self._wc_head_node.show()
-            self._wc_head_node.setPos(px, py, pz)
-            self._wc_head_node.setH(info.get("h", 0.0))
+            self._wc_head_node.setPos(ipx, ipy, ipz)
+            self._wc_head_node.setH(self._wc_h_interp)
+            # фаза 2 AERIAL: голова крупнее
+            if state == "AERIAL" and ph == 2:
+                self._wc_head_node.setScale(1.7)
+            else:
+                self._wc_head_node.setScale(1.0)
         else:
             self._wc_head_node.hide()
 
-        # тело — сегменты по трейлу
-        show_segs = (state == "SLITHERING")
-        for i, seg_np in enumerate(self._wc_seg_nodes):
-            tidx = (i + 1) * 2  # каждые 2 точки трейла = один сегмент
-            if show_segs and tidx < len(trail):
-                tx, ty, tz = trail[tidx]
+        # --- ТЕЛО ---
+        if state == "SLITHERING":
+            # ползание — сегменты по трейлу
+            for i, seg_np in enumerate(self._wc_seg_nodes):
+                tidx = (i + 1) * 2
+                if tidx < len(trail):
+                    tx, ty, tz = trail[tidx]
+                    seg_np.show()
+                    seg_np.setPos(tx, ty, tz)
+                    seg_np.setScale(1.0)
+                    if tidx + 2 < len(trail):
+                        nx_pt, ny_pt = trail[tidx + 2][0], trail[tidx + 2][1]
+                        dx_s = tx - nx_pt; dy_s = ty - ny_pt
+                        if _m.hypot(dx_s, dy_s) > 0.01:
+                            seg_np.setH(_m.degrees(_m.atan2(-dx_s, dy_s)))
+                else:
+                    seg_np.hide()
+        elif visible:
+            # PEEKING / AERIAL / DESCENDING — тело висит вертикально ниже головы
+            n_show = min(len(self._wc_seg_nodes), 6)
+            head_scale = 1.7 if (state == "AERIAL" and ph == 2) else 1.0
+            for i, seg_np in enumerate(self._wc_seg_nodes):
+                if i >= n_show:
+                    seg_np.hide()
+                    continue
+                seg_z = ipz - (i + 1) * 1.6
+                r_scale = max(0.4, 1.0 - i * 0.07) * head_scale
                 seg_np.show()
-                seg_np.setPos(tx, ty, tz)
-                # ориентация сегмента: повернуть к следующему
-                if tidx + 2 < len(trail):
-                    nx_pt, ny_pt = trail[tidx + 2][0], trail[tidx + 2][1]
-                    dx_s = tx - nx_pt; dy_s = ty - ny_pt
-                    if math.hypot(dx_s, dy_s) > 0.01:
-                        seg_np.setH(math.degrees(math.atan2(-dx_s, dy_s)))
-            else:
+                seg_np.setPos(ipx, ipy, seg_z)
+                seg_np.setScale(r_scale)
+                seg_np.setH(self._wc_h_interp)
+        else:
+            for seg_np in self._wc_seg_nodes:
                 seg_np.hide()
 
-        # дыры — показываем только при активном боссе
+        # --- НОРЫ (показывать пока босс активен) ---
         for n in self._wc_hole_nodes:
             n.show()
 
-        # HP-бар
-        bar_z = pz + 4.5 if visible else (self._wc_hole_nodes[0].getZ() + 3 if self._wc_hole_nodes else 5.0)
-        self.wc_bar.set_pos(px, py, bar_z)
-        self.wc_bar.set_fraction(hp / max_hp if max_hp else 0.0)
-        self.wc_bar.set_label(f"ЧЕРВЯЧЕЛЛО ({ph} фаза) - {hp}/{max_hp}")
+        # --- СФЕРЫ ЛИНА ---
+        from common.config import LINA_SPHERE_POSITIONS
+        self._wc_lina_pulse_t = getattr(self, "_wc_lina_pulse_t", 0.0)
+        self._wc_lina_pulse_t += getattr(self, "_last_dt", 0.033)
+        pulse = 0.85 + 0.15 * _m.sin(self._wc_lina_pulse_t * 3.0)
+        for i, (lnode, lbar) in enumerate(zip(self._wc_lina_nodes, self._wc_lina_bars)):
+            if i < len(lina_data):
+                lhp, lalive = lina_data[i]
+            else:
+                lhp, lalive = 150, 1
+            lx, ly, lz = LINA_SPHERE_POSITIONS[i]
+            if lalive:
+                lnode.show()
+                lnode.setScale(pulse)
+                lbar.set_fraction(max(0.0, lhp / 150.0))
+                lbar.set_pos(lx, ly, lz + 2.4)
+            else:
+                lnode.hide()
+                lbar.set_fraction(0.0)
 
-        # хит-партиклы
+        # --- HP БАР ---
+        bar_z = ipz + 5.0 if visible else (self._wc_hole_nodes[0].getZ() + 3 if self._wc_hole_nodes else 5.0)
+        bar_x, bar_y = (ipx, ipy) if visible else (px, py)
+        self.wc_bar.set_pos(bar_x, bar_y, bar_z)
+        self.wc_bar.set_fraction(hp / max_hp if max_hp else 0.0)
+        lina_shield = ph == 1 and any((d[1] if len(d) > 1 else 1) for d in lina_data)
+        label = f"ЧЕРВЯЧЕЛЛО ({ph} фаза) - {hp}/{max_hp}"
+        if lina_shield:
+            label += "  [ЩИТ]"
+        self.wc_bar.set_label(label)
+
+        # --- ХИТ-ПАРТИКЛЫ ---
         if hp < self._prev_wc_hp and visible:
-            self.particles.burst([px, py, pz], count=12,
+            self.particles.burst([ipx, ipy, ipz], count=12,
                                  color=(0.95, 0.55, 0.2, 1), speed=5.0,
                                  size=0.3, life=0.6, grav=-6.0, spread=1.2, up=0.8)
-            self._play_oneshot(AC.SFX_WORMCHELLO_HIT, volume=self._vol_at(px, py))
+            self._play_oneshot(AC.SFX_WORMCHELLO_HIT, volume=self._vol_at(ipx, ipy))
         self._prev_wc_hp = hp
 
-        # фаза 2: при воздушной атаке — нити биомассы сверху
-        if state == "AERIAL" and pz > 8.0:
-            self.particles.burst([px, py, pz - 1.0], count=3,
+        # фаза 2 AERIAL — нити биомассы сверху
+        if state == "AERIAL" and ipz > 8.0:
+            self.particles.burst([ipx, ipy, ipz - 1.5], count=3,
                                  color=(0.90, 0.65, 0.45, 1), speed=3.5,
                                  size=0.4, life=1.2, grav=2.0, spread=0.6, up=-1.0)
 
@@ -3332,31 +3464,75 @@ class Roblox2(ShowBase):
                 self.worm_shot_nodes[wsid].removeNode()
                 del self.worm_shot_nodes[wsid]
 
+    def _update_wc_filter(self, dt):
+        """Плавная анимация фиолетового фильтра ЧЕРВЯЧЕЛЛО."""
+        if not hasattr(self, "_wc_night_overlay"):
+            return
+        target = 0.35 if self.wormchello_info else 0.0
+        self._wc_night_alpha += (target - self._wc_night_alpha) * min(1.0, 2.5 * dt)
+        if self._wc_night_alpha > 0.005:
+            self._wc_night_overlay.setColor(0.08, 0.0, 0.18, self._wc_night_alpha)
+            self._wc_night_overlay.show()
+        else:
+            self._wc_night_overlay.hide()
+
     def _wormchello_cutscene(self, msg):
-        """Кат-сцена появления Червячелло: телепорт в центр, вспышка, дыры."""
+        """Кат-сцена появления ЧЕРВЯЧЕЛЛО: поэтапное появление — сферы → норы → босс."""
         import random as _r
-        # Телепорт игрока в центральную арену
+        from common.config import WORMCHELLO_HOLES, LINA_SPHERE_POSITIONS
+
+        # телепорт игрока в центральную арену
         if self.state == "COMBAT":
             self.pos.set(_r.uniform(-4, 4), _r.uniform(-4, 4), 0.1)
-        # инициализировать ноды (дыры) до следующего снапшота
+
+        # инициализировать ноды если ещё нет
         if self._wc_head_node is None:
             self._init_wormchello_nodes()
-        # показать дыры
+
+        # скрыть дыры и сферы — будут показаны поэтапно
         for n in self._wc_hole_nodes:
-            n.show()
-        # эффекты
-        self._show_notice("ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО!", color=(0.95, 0.45, 0.1, 1), duration=6.0)
+            n.hide()
+        for n in self._wc_lina_nodes:
+            n.hide()
+
+        self._prev_wc_hp = 2000
+
+        # --- шаг 0: вспышка + звук + музыка ---
         self._flash_screen((0.0, 0.0, 0.0, 1), 0.9)
-        self._shake(0.8)
+        self._shake(0.6)
         self._play_oneshot(AC.SFX_WORMCHELLO_SPAWN)
         self._play_music(AC.MUSIC_WORMCHELLO)
-        # дыры открываются: партиклы земли вокруг каждой норы
-        from common.config import WORMCHELLO_HOLES
-        for (hx, hy) in WORMCHELLO_HOLES:
-            self.particles.burst([hx, hy, 0.2], count=18,
-                                 color=(0.38, 0.28, 0.12, 1), speed=5.0,
-                                 size=0.3, life=1.0, grav=-6.0, spread=1.2, up=1.0)
-        self._prev_wc_hp = 2000  # reset hit tracker
+
+        # --- шаг 1 (t=1.2s): появление сфер ЛИНА ---
+        def _show_lina(task):
+            self._show_notice("Уничтожь сферы ЛИНА!", color=(0.3, 0.85, 1.0, 1), duration=5.0)
+            for i, n in enumerate(self._wc_lina_nodes):
+                n.show()
+                lx, ly, lz = LINA_SPHERE_POSITIONS[i]
+                self.particles.burst([lx, ly, lz], count=20,
+                                     color=(0.3, 0.75, 1.0, 1), speed=5.0,
+                                     size=0.35, life=1.1, grav=-5.0, spread=1.4, up=1.0)
+            self._shake(0.4)
+            return task.done
+        self.taskMgr.doMethodLater(1.2, _show_lina, "wc_lina_appear")
+
+        # --- шаг 2 (t=2.8s): провалы в полу ---
+        def _show_holes(task):
+            for n in self._wc_hole_nodes:
+                n.show()
+            for (hx, hy) in WORMCHELLO_HOLES:
+                self.particles.burst([hx, hy, 0.2], count=20,
+                                     color=(0.38, 0.28, 0.12, 1), speed=5.0,
+                                     size=0.3, life=1.0, grav=-6.0, spread=1.2, up=1.2)
+            self._shake(0.7)
+            return task.done
+        self.taskMgr.doMethodLater(2.8, _show_holes, "wc_holes_appear")
+
+        # --- шаг 3 (t=4.0s): анонс босса ---
+        def _announce(task):
+            self._show_notice("ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО!", color=(0.95, 0.45, 0.1, 1), duration=4.5)
+            return task.done
+        self.taskMgr.doMethodLater(4.0, _announce, "wc_announce")
 
     def _update_cup_spots(self, spots):
         """Показать поставленные белые стаканы на 4 угловых пьедесталах."""

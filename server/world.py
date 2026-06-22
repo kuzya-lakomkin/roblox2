@@ -563,6 +563,16 @@ class AntShot:
         return [self.asid, round(self.pos[0], 2), round(self.pos[1], 2), round(self.pos[2], 2)]
 
 
+class LinaSphere:
+    """Светящаяся сфера ЛИНА — щит первой фазы ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО."""
+    __slots__ = ("pos", "hp", "alive")
+
+    def __init__(self, pos):
+        self.pos = list(pos)
+        self.hp = C.LINA_SPHERE_HP
+        self.alive = True
+
+
 class WormShot:
     """Снаряд-биомасса ЧЕРВЯЧЕЛЛО — летит в игрока по дуге."""
     __slots__ = ("wsid", "pos", "vel", "die_at")
@@ -601,7 +611,8 @@ class WormChello:
 
     __slots__ = ("pos", "hp", "max_hp", "phase", "state", "hole_idx",
                  "h", "shoot_at", "state_until", "spawn_minion_at",
-                 "body_trail", "slither_pts", "slither_idx")
+                 "body_trail", "slither_pts", "slither_idx",
+                 "lina_spheres", "descent_new_hole")
 
     def __init__(self, now):
         self.hp = C.WORMCHELLO_HP
@@ -618,6 +629,8 @@ class WormChello:
         self.body_trail = [[hx, hy, -4.0]] * 24
         self.slither_pts = []
         self.slither_idx = 0
+        self.lina_spheres = [LinaSphere(list(p)) for p in C.LINA_SPHERE_POSITIONS]
+        self.descent_new_hole = 0
 
     def update(self, dt, now, players):
         if self.state == "UNDERGROUND":
@@ -629,6 +642,8 @@ class WormChello:
             self._update_slithering(dt, now)
         elif self.state == "AERIAL":
             self._update_aerial(dt, now)
+        elif self.state == "DESCENDING":
+            self._update_descending(dt, now)
         # обновляем трейл тела
         self.body_trail.insert(0, list(self.pos))
         if len(self.body_trail) > 24:
@@ -664,14 +679,26 @@ class WormChello:
                 self._go_underground(now)
 
     def _go_underground(self, now):
-        self.state = "UNDERGROUND"
-        # переходим в случайную другую нору мгновенно (под землёй)
+        # плавно опускаемся в нору, затем переходим под землю
         new_hole = (self.hole_idx + random.randint(1, 3)) % 4
-        self.hole_idx = new_hole
-        hx, hy = self.HOLES[new_hole]
-        self.pos = [hx, hy, -4.0]
+        self._go_descend(now, new_hole)
+
+    def _go_descend(self, now, new_hole_idx):
+        """Начать погружение в нору (DESCENDING), потом уйти под землю."""
+        self.state = "DESCENDING"
+        self.descent_new_hole = new_hole_idx
         self.shoot_at = now + 999.0
-        self.state_until = now + random.uniform(2.0, C.WORMCHELLO_PEEK_INTERVAL)
+
+    def _update_descending(self, dt, now):
+        spd = C.WORMCHELLO_DESCEND_SPEED
+        self.pos[2] = max(-4.0, self.pos[2] - spd * dt)
+        if self.pos[2] <= -4.0:
+            # полностью ушли — телепорт под землёй к новой норе
+            self.hole_idx = self.descent_new_hole
+            hx, hy = self.HOLES[self.hole_idx]
+            self.pos[0] = hx; self.pos[1] = hy
+            self.state = "UNDERGROUND"
+            self.state_until = now + random.uniform(1.5, C.WORMCHELLO_PEEK_INTERVAL)
 
     def _go_slither(self, now):
         self.state = "SLITHERING"
@@ -719,6 +746,7 @@ class WormChello:
     def snapshot(self):
         trail = [[round(p[0], 1), round(p[1], 1), round(p[2], 1)]
                  for p in self.body_trail[:20]]
+        lina = [[s.hp, 1 if s.alive else 0] for s in self.lina_spheres]
         return {
             "pos": [round(v, 2) for v in self.pos],
             "h": round(self.h, 1),
@@ -728,6 +756,7 @@ class WormChello:
             "state": self.state,
             "hole": self.hole_idx,
             "trail": trail,
+            "lina": lina,
         }
 
 
@@ -1411,11 +1440,31 @@ class World:
                 if _dist2(shot.pos, [self.boss2.pos[0], self.boss2.pos[1], 1.2]) < 16.0:
                     self._respect_boss(self.boss2, shot.owner, now)
                     hit = True
-            # ЧЕРВЯЧЕЛЛО — сироп снимает HP (только когда не под землёй)
-            if (not hit and self.wormchello and shot.kind == C.WEAPON_SYRUP
-                    and self.wormchello.state != "UNDERGROUND"):
+            # ЛИНА сферы — сироп ранит (всегда, независимо от состояния Червячелло)
+            if not hit and self.wormchello and shot.kind == C.WEAPON_SYRUP:
                 wc = self.wormchello
-                if _dist2(shot.pos, wc.pos) < (C.PROJECTILE_RADIUS + 1.5) ** 2:
+                for li, ls in enumerate(wc.lina_spheres):
+                    if not ls.alive:
+                        continue
+                    r2 = (C.PROJECTILE_RADIUS + C.LINA_SPHERE_RADIUS) ** 2
+                    if _dist2(shot.pos, ls.pos) < r2:
+                        ls.hp -= C.PROJECTILE_DAMAGE
+                        if ls.hp <= 0:
+                            ls.hp = 0
+                            ls.alive = False
+                            self.events.append({"t": "event", "kind": "wormchello_lina_hit",
+                                                "idx": li,
+                                                "pos": [round(ls.pos[0], 2),
+                                                        round(ls.pos[1], 2),
+                                                        round(ls.pos[2], 2)]})
+                        hit = True
+                        break
+            # ЧЕРВЯЧЕЛЛО — сироп снимает HP (не под землёй; фаза 1 неуязвима пока живы ЛИНА)
+            if (not hit and self.wormchello and shot.kind == C.WEAPON_SYRUP
+                    and self.wormchello.state not in ("UNDERGROUND", "DESCENDING")):
+                wc = self.wormchello
+                lina_shield = wc.phase == 1 and any(s.alive for s in wc.lina_spheres)
+                if not lina_shield and _dist2(shot.pos, wc.pos) < (C.PROJECTILE_RADIUS + 1.5) ** 2:
                     wc.hp -= C.PROJECTILE_DAMAGE
                     self.events.append({"t": "event", "kind": "wormchello_hit",
                                         "pos": [round(wc.pos[0], 2), round(wc.pos[1], 2),
@@ -1860,6 +1909,8 @@ class World:
 
     def _update_slits(self, dt, now):
         if self.black_king:   # во время BLACK KING щели не появляются
+            return
+        if self.wormchello:   # во время ЧЕРВЯЧЕЛЛО щели тоже не появляются
             return
         # менеджер появления события
         if (self.players and not self.slit_event_active

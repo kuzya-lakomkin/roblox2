@@ -28,10 +28,25 @@ from client.citymap import build_city, build_spawn_pillar, SKY
 from client.ui import (MainMenu, PauseMenu, SettingsMenu, InfoScreen,
                        LoginScreen, RegisterScreen, KeyBindingsScreen,
                        DEFAULT_BINDINGS)
+import client.assets as _assets_mod
 from client.assets import load_sound, load_font, load_music, load_model, load_texture
 from client.particles import ParticleSystem
 from client import asset_config as AC
 from direct.filter.CommonFilters import CommonFilters
+
+def _load_gfx_quality() -> str:
+    """Читает качество графики из client_settings.json ДО создания окна."""
+    import os
+    path = os.path.join(os.path.dirname(__file__), "..", "client_settings.json")
+    try:
+        with open(path, encoding="utf-8") as _f:
+            return _json_mod.load(_f).get("gfx_quality", "medium")
+    except Exception:
+        return "medium"
+
+
+_GFX_QUALITY = _load_gfx_quality()
+
 
 def _http_post(url: str, data: dict) -> dict:
     """Синхронный HTTP POST без внешних зависимостей."""
@@ -45,11 +60,25 @@ def _http_post(url: str, data: dict) -> dict:
 
 
 loadPrcFileData("", "window-title SWAGA")
-loadPrcFileData("", "sync-video true")
-# сглаживание (антиалиасинг): MSAA по краям геометрии + анизотропная фильтрация текстур
-loadPrcFileData("", "framebuffer-multisample 1")
-loadPrcFileData("", "multisamples 4")
-loadPrcFileData("", "texture-anisotropic-degree 8")
+# качество графики: low / medium / high (читается из client_settings.json до создания окна)
+if _GFX_QUALITY == "low":
+    loadPrcFileData("", "sync-video false")
+    loadPrcFileData("", "framebuffer-multisample 0")
+    loadPrcFileData("", "multisamples 0")
+    loadPrcFileData("", "texture-anisotropic-degree 1")
+    loadPrcFileData("", "texture-scale 0.5")
+elif _GFX_QUALITY == "medium":
+    loadPrcFileData("", "sync-video true")
+    loadPrcFileData("", "framebuffer-multisample 1")
+    loadPrcFileData("", "multisamples 2")
+    loadPrcFileData("", "texture-anisotropic-degree 4")
+else:  # high
+    loadPrcFileData("", "sync-video true")
+    loadPrcFileData("", "framebuffer-multisample 1")
+    loadPrcFileData("", "multisamples 4")
+    loadPrcFileData("", "texture-anisotropic-degree 8")
+
+_assets_mod._ANISO = {"low": 1, "medium": 4, "high": 8}.get(_GFX_QUALITY, 8)
 
 MOUSE_SENS = 0.12
 # цвета червей в той же синтвейв-гамме (циан/розовый/фиолет/тил/сине-фиолет)
@@ -322,6 +351,7 @@ class Roblox2(ShowBase):
         self._saved_password = settings.get("saved_password", "")
         self._music_vol = float(settings.get("music_vol", 0.5))
         self._sfx_vol   = float(settings.get("sfx_vol",   1.0))
+        self.gfx_quality = _GFX_QUALITY  # уже применено в PRC до создания окна
         self.my_id = None
         self.net = None
         self.world_built = False         # игровое состояние (HUD/ввод/частицы) построено
@@ -337,7 +367,8 @@ class Roblox2(ShowBase):
         self._menu_cam_t = 0.0      # фаза прокрутки камеры на фоне меню
 
         self.setBackgroundColor(*SKY[:3])
-        self.render.setAntialias(AntialiasAttrib.MMultisample)   # MSAA на всю сцену
+        if self.gfx_quality != "low":
+            self.render.setAntialias(AntialiasAttrib.MMultisample)   # MSAA на всю сцену
         self.disableMouse()
         self.camLens.setFov(85)          # широкий обзор (убираем эффект «зума»)
         self.camLens.setNear(0.2)
@@ -398,6 +429,7 @@ class Roblox2(ShowBase):
             "saved_password": "",
             "music_vol": 0.5,
             "sfx_vol": 1.0,
+            "gfx_quality": "medium",
         }
         try:
             with open(path, encoding="utf-8") as f:
@@ -423,6 +455,7 @@ class Roblox2(ShowBase):
                     "saved_password": self._saved_password,
                     "music_vol": self._music_vol,
                     "sfx_vol": self._sfx_vol,
+                    "gfx_quality": getattr(self, "_pending_gfx_quality", self.gfx_quality),
                 }, f, indent=2, ensure_ascii=False)
         except Exception:
             pass
@@ -614,7 +647,8 @@ class Roblox2(ShowBase):
         self._shake_amp = 0.0
 
         # партиклы (струи, смерть тараканов)
-        self.particles = ParticleSystem(self.render)
+        _pmax = {"low": 60, "medium": 100, "high": 150}.get(self.gfx_quality, 150)
+        self.particles = ParticleSystem(self.render, max_particles=_pmax)
 
         self._setup_game_input()
         self._setup_hud()
@@ -1165,6 +1199,11 @@ class Roblox2(ShowBase):
         props.setSize(w, h)
         self.win.requestProperties(props)
 
+    def set_gfx_quality(self, quality: str):
+        """Сохранить качество графики в файл настроек (применится после перезапуска)."""
+        self._pending_gfx_quality = quality
+        self._save_settings()
+
     def quit_game(self):
         if self.net:
             self.net.stop()
@@ -1192,18 +1231,25 @@ class Roblox2(ShowBase):
             pass
 
     def _setup_bloom(self):
+        if self.gfx_quality == "low":
+            self.filters = None
+            return
         # неоновое свечение: bloom по ярким (full-bright) неон-элементам
         try:
             self.filters = CommonFilters(self.win, self.cam)
-            self.filters.setBloom(blend=(0.3, 0.4, 0.3, 0.0), mintrigger=0.55,
-                                  maxtrigger=1.0, desat=0.1, intensity=1.5, size="medium")
+            if self.gfx_quality == "medium":
+                self.filters.setBloom(blend=(0.3, 0.4, 0.3, 0.0), mintrigger=0.6,
+                                      maxtrigger=1.0, desat=0.05, intensity=1.0, size="small")
+            else:
+                self.filters.setBloom(blend=(0.3, 0.4, 0.3, 0.0), mintrigger=0.55,
+                                      maxtrigger=1.0, desat=0.1, intensity=1.5, size="medium")
         except Exception:
             self.filters = None
 
     def _set_menu_blur(self, on):
-        # лёгкое размытие 3D-сцены за меню (на GUI/aspect2d не влияет)
-        if not self.filters:
+        if self.gfx_quality == "low" or not self.filters:
             return
+        # лёгкое размытие 3D-сцены за меню (на GUI/aspect2d не влияет)
         try:
             self.filters.setBlurSharpen(0.62 if on else 1.0)  # <1 = размытие, 1 = чётко
         except Exception:

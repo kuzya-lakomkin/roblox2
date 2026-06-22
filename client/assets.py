@@ -16,6 +16,7 @@ TEXTURE_DIR = AC.TEXTURES_DIR
 
 _tex_cache = {}
 _snd_cache = {}
+_ANISO = 8  # анизотропная фильтрация; main.py выставляет до первой загрузки текстур
 
 
 def _placeholder_texture(size=64):
@@ -59,7 +60,7 @@ def load_texture(loader, name):
     # сглаживание текстур: трилинейная фильтрация (мипмапы) + анизотропия
     tex.setMinfilter(Texture.FTLinearMipmapLinear)
     tex.setMagfilter(Texture.FTLinear)
-    tex.setAnisotropicDegree(8)
+    tex.setAnisotropicDegree(_ANISO)
     _tex_cache[name] = tex
     return tex
 

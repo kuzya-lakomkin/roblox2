@@ -10,8 +10,8 @@ from panda3d.core import TransparencyAttrib, Vec3
 
 from client.primitives import make_box
 
-_MAX = 150   # потолок одновременных частиц
-_POOL = 150  # размер пула белых боксов
+_MAX = 150   # потолок одновременных частиц (переопределяется через ParticleSystem)
+_POOL = 150  # размер пула белых боксов (переопределяется через ParticleSystem)
 
 
 class _P:
@@ -28,12 +28,13 @@ class _P:
 
 
 class ParticleSystem:
-    def __init__(self, parent):
+    def __init__(self, parent, max_particles=_MAX):
         self.parent = parent
         self.parts = []
         self._pool = []
+        self._max = max_particles
         # pre-allocate pool: белые боксы, стэшированные до использования
-        for _ in range(_POOL):
+        for _ in range(max_particles):
             node = make_box(1, 1, 1, (1, 1, 1, 1))
             node.setLightOff(1)
             node.setTransparency(TransparencyAttrib.MAlpha)
@@ -61,9 +62,9 @@ class ParticleSystem:
               size=0.22, life=0.6, grav=-9.0, spread=1.0, up=1.0,
               vel_add=None):
         """Разлёт частиц из точки pos."""
-        if len(self.parts) >= _MAX:
+        if len(self.parts) >= self._max:
             return
-        avail = _MAX - len(self.parts)
+        avail = self._max - len(self.parts)
         count = min(count, avail)
         for _ in range(count):
             node = self._acquire(color)

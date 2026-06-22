@@ -10,6 +10,7 @@ import math
 
 from panda3d.core import CardMaker, NodePath, TextNode, Texture
 
+import client.assets as _assets_mod
 from client.assets import load_texture, texture_exists
 from client.primitives import make_box
 from client.procgen import make_cylinder
@@ -48,7 +49,7 @@ def _tiled_texture(loader, path):
     tex.setWrapV(Texture.WM_repeat)
     tex.setMinfilter(Texture.FTLinearMipmapLinear)
     tex.setMagfilter(Texture.FTLinear)
-    tex.setAnisotropicDegree(8)
+    tex.setAnisotropicDegree(_assets_mod._ANISO)
     return tex
 
 

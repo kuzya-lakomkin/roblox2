@@ -467,11 +467,15 @@ class PauseMenu(Screen):
 
 # ── Настройки ────────────────────────────────────────────────────────────────
 
+_GFX_LABELS = ["Низкое", "Среднее", "Высокое"]
+_GFX_VALUES = ["low", "medium", "high"]
+
+
 class SettingsMenu(Screen):
     """Настройки: разрешение, полный экран, громкость, управление, разлогин."""
 
     def __init__(self, app):
-        super().__init__(app, panel=(-0.58, 0.58, -0.86, 0.78))
+        super().__init__(app, panel=(-0.58, 0.58, -0.92, 0.78))
         self._title("НАСТРОЙКИ", y=0.64)
 
         # --- разрешение ---
@@ -495,53 +499,80 @@ class SettingsMenu(Screen):
             command=self._noop, **_kw(self.font_ui),
         )
 
+        # --- качество графики ---
+        DirectLabel(parent=self.root, text="Графика:", scale=0.048,
+                    pos=(-0.52, 0, 0.12), frameColor=(0, 0, 0, 0),
+                    text_fg=ACCENT2, text_align=0, **_kw(self.font_ui))
+        cur_q = getattr(app, "gfx_quality", "medium")
+        cur_idx = _GFX_VALUES.index(cur_q) if cur_q in _GFX_VALUES else 1
+        self.gfx_menu = DirectOptionMenu(
+            parent=self.root, scale=0.058, pos=(0.05, 0, 0.12),
+            items=_GFX_LABELS, initialitem=cur_idx, highlightColor=BTN_HI,
+            frameColor=BTN, text_fg=ACCENT2, relief="flat",
+            popupMarker_scale=0.5, **_kw(self.font_ui),
+            command=self._on_gfx_change,
+        )
+        self._gfx_restart_lbl = DirectLabel(
+            parent=self.root, text="", scale=0.038,
+            pos=(0.0, 0, -0.01), frameColor=(0, 0, 0, 0),
+            text_fg=(1.0, 0.55, 0.1, 1), **_kw(self.font_ui))
+
         # --- громкость музыки ---
         DirectLabel(parent=self.root, text="Музыка:", scale=0.048,
-                    pos=(-0.52, 0, 0.12), frameColor=(0, 0, 0, 0),
+                    pos=(-0.52, 0, -0.10), frameColor=(0, 0, 0, 0),
                     text_fg=ACCENT, text_align=0, **_kw(self.font_ui))
         self.music_slider = DirectSlider(
             parent=self.root, range=(0, 100),
             value=int(app._music_vol * 100),
-            pageSize=5, pos=(0.12, 0, 0.12), scale=0.30,
+            pageSize=5, pos=(0.12, 0, -0.10), scale=0.30,
             frameColor=(0.20, 0.16, 0.08, 0.80),
             thumb_frameColor=ACCENT,
             command=self._on_music_slider,
         )
         self._music_val_lbl = DirectLabel(
             parent=self.root, text=f"{int(app._music_vol*100)}%",
-            scale=0.045, pos=(0.48, 0, 0.12),
+            scale=0.045, pos=(0.48, 0, -0.10),
             frameColor=(0, 0, 0, 0), text_fg=TEXT, **_kw(self.font_ui))
 
         # --- громкость звуков ---
         DirectLabel(parent=self.root, text="Звуки:", scale=0.048,
-                    pos=(-0.52, 0, -0.04), frameColor=(0, 0, 0, 0),
+                    pos=(-0.52, 0, -0.26), frameColor=(0, 0, 0, 0),
                     text_fg=ACCENT, text_align=0, **_kw(self.font_ui))
         self.sfx_slider = DirectSlider(
             parent=self.root, range=(0, 100),
             value=int(app._sfx_vol * 100),
-            pageSize=5, pos=(0.12, 0, -0.04), scale=0.30,
+            pageSize=5, pos=(0.12, 0, -0.26), scale=0.30,
             frameColor=(0.20, 0.16, 0.08, 0.80),
             thumb_frameColor=ACCENT,
             command=self._on_sfx_slider,
         )
         self._sfx_val_lbl = DirectLabel(
             parent=self.root, text=f"{int(app._sfx_vol*100)}%",
-            scale=0.045, pos=(0.48, 0, -0.04),
+            scale=0.045, pos=(0.48, 0, -0.26),
             frameColor=(0, 0, 0, 0), text_fg=TEXT, **_kw(self.font_ui))
 
         # --- кнопки ---
-        self._button("Управление", -0.22, app.open_keybindings, hw=0.38, hh=0.050)
-        self._button("Применить",  -0.36, self._apply,           hw=0.38, hh=0.050)
+        self._button("Управление", -0.42, app.open_keybindings, hw=0.38, hh=0.050)
+        self._button("Применить",  -0.56, self._apply,           hw=0.38, hh=0.050)
 
         from common import config as _cfg
         if getattr(_cfg, "AUTH_ENABLED", False):
-            self._button("Выйти из аккаунта", -0.52, app.do_logout, hw=0.38, hh=0.050)
-            self._button("Назад", -0.66, app.close_settings, hw=0.38, hh=0.050)
+            self._button("Выйти из аккаунта", -0.70, app.do_logout, hw=0.38, hh=0.050)
+            self._button("Назад", -0.84, app.close_settings, hw=0.38, hh=0.050)
         else:
-            self._button("Назад", -0.52, app.close_settings, hw=0.38, hh=0.050)
+            self._button("Назад", -0.70, app.close_settings, hw=0.38, hh=0.050)
 
     def _noop(self, *_):
         pass
+
+    def _on_gfx_change(self, label):
+        idx = _GFX_LABELS.index(label) if label in _GFX_LABELS else 1
+        new_q = _GFX_VALUES[idx]
+        self.app.set_gfx_quality(new_q)
+        if new_q != self.app.gfx_quality:
+            self._gfx_restart_lbl["text"] = "Перезапустите игру"
+        else:
+            self._gfx_restart_lbl["text"] = ""
 
     def _on_music_slider(self):
         v = int(self.music_slider["value"])

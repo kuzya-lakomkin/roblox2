@@ -52,7 +52,8 @@ class Player:
                  "emote", "pet", "emote_until", "last_shot", "ult_ready_at",
                  "dead", "respawn_at", "resources", "vel", "_last_pos",
                  "touch_inv_until", "lit_energy", "bee_until", "move_slow_until",
-                 "cups", "user_id", "kills_session", "respawn_immune_until")
+                 "cups", "user_id", "kills_session", "respawn_immune_until",
+                 "god_mode")
 
     def __init__(self, pid, name):
         self.pid = pid
@@ -81,6 +82,7 @@ class Player:
         self.user_id = 0               # ID в auth-сервере (0 = не авторизован)
         self.kills_session = 0         # убийств за сессию (отправляется в auth при выходе)
         self.respawn_immune_until = 0.0  # неуязвимость после возрождения
+        self.god_mode = False          # бесконечное HP (только GODBLESSER)
 
     def snapshot(self):
         now = time.time()
@@ -270,11 +272,13 @@ class Boss:
 
     Две фазы: 1) кидает ракеты; 2) (>= BOSS_PHASE2_FRAC уважения) кидает ЧАЩЕ и
     испускает ГАЗ — едкий дым, замедляющий игроков рядом."""
-    __slots__ = ("pos", "dir", "respect", "h", "throw_at", "gas_at")
+    __slots__ = ("pos", "dir", "respect", "respect_max", "h", "throw_at", "gas_at")
 
-    def __init__(self, now):
+    def __init__(self, now, spawn_pos=None):
         self.respect = 0
-        self.pos = [BOSS_SPAWN[0], BOSS_SPAWN[1], 0.0]   # всегда фикс-точка
+        self.respect_max = C.BOSS_RESPECT_MAX
+        sp = spawn_pos or BOSS_SPAWN
+        self.pos = [sp[0], sp[1], 0.0]
         self.dir = [0.0, 1.0]
         self.h = 0.0
         self.throw_at = now + C.BOSS_THROW_INTERVAL      # не кидает сразу
@@ -282,7 +286,7 @@ class Boss:
 
     @property
     def phase(self):
-        return 2 if self.respect >= C.BOSS_RESPECT_MAX * C.BOSS_PHASE2_FRAC else 1
+        return 2 if self.respect >= self.respect_max * C.BOSS_PHASE2_FRAC else 1
 
     def update(self, dt, now, players, frozen, nav=None, shots=None):
         if frozen:
@@ -338,7 +342,7 @@ class Boss:
 
     def snapshot(self):
         return {"pos": [round(v, 2) for v in self.pos], "h": round(self.h, 1),
-                "respect": self.respect, "max": C.BOSS_RESPECT_MAX, "phase": self.phase}
+                "respect": self.respect, "max": self.respect_max, "phase": self.phase}
 
 
 class BossShot:
@@ -493,6 +497,46 @@ class NeonAnt:
     def snapshot(self):
         immune = 1 if time.time() < self.spawn_immune_until else 0
         return [self.nid, round(self.pos[0], 2), round(self.pos[1], 2), round(self.h, 1), self.hp, immune]
+
+
+class SmileRoach:
+    """Улыбающийся таракан с красными глазами — волна 7+. Распыляет аэрозоль, замедляя игроков."""
+    __slots__ = ("sid", "pos", "hp", "h", "spray_at", "spawn_immune_until")
+
+    def __init__(self, sid, spawn_pt):
+        self.sid = sid
+        self.pos = [float(spawn_pt[0]), float(spawn_pt[1]), 0.0]
+        self.hp = C.SMILE_ROACH_HP
+        self.h = 0.0
+        self.spray_at = time.time() + C.SMILE_ROACH_SPRAY_INTERVAL
+        self.spawn_immune_until = 0.0
+
+    def update(self, dt, now, players, frozen):
+        if frozen:
+            return
+        target = _nearest_player(players, self.pos, C.ANT_CHASE_RANGE)
+        if not target:
+            return
+        dx = target.pos[0] - self.pos[0]
+        dy = target.pos[1] - self.pos[1]
+        dist = math.hypot(dx, dy)
+        if dist > 0.1:
+            spd = C.SMILE_ROACH_SPEED
+            nx = self.pos[0] + (dx / dist) * spd * dt
+            ny = self.pos[1] + (dy / dist) * spd * dt
+            if not in_any_building(nx, ny, _BUILDING_RECTS):
+                self.pos[0], self.pos[1] = nx, ny
+            elif not in_any_building(nx, self.pos[1], _BUILDING_RECTS):
+                self.pos[0] = nx
+            elif not in_any_building(self.pos[0], ny, _BUILDING_RECTS):
+                self.pos[1] = ny
+            self.pos[0], self.pos[1] = _clamp_to_arena(self.pos[0], self.pos[1])
+            self.h = math.degrees(math.atan2(-dx, dy))
+
+    def snapshot(self):
+        immune = 1 if time.time() < self.spawn_immune_until else 0
+        return [self.sid, round(self.pos[0], 2), round(self.pos[1], 2),
+                round(self.h, 1), self.hp, immune]
 
 
 class AntShot:
@@ -815,8 +859,11 @@ class World:
         self.drops = {}         # did -> {"pos":[x,y,z], "kind":str}
         self._next_drop_id = 1
         self.boss = None
-        self.boss_shots = {}    # bsid -> BossShot
+        self.boss2 = None       # второй Папаня (только на волне DOUBLE_BOSS_WAVE)
+        self.boss_shots = {}    # bsid -> BossShot (общий пул для обоих боссов)
         self._next_boss_shot_id = 1
+        self.smile_roaches = {}   # sid -> SmileRoach
+        self._next_smile_id = 1
         self.slits = {}              # sid -> Slit (настенный враг «ЩЕЛЬ»)
         self._next_slit_id = 1
         self.slit_event_active = False
@@ -869,6 +916,8 @@ class World:
             self.bees.clear()
             self.boss_shots.clear()
             self.boss = None
+            self.boss2 = None
+            self.smile_roaches.clear()
             self.slits = {}
             self.slit_event_active = False
             self.drops.clear()
@@ -885,6 +934,13 @@ class World:
             self.black_king = False
             self.cup_spots = [False] * len(CUP_SPOTS)
         return pl
+
+    def toggle_god(self, pid):
+        pl = self.players.get(pid)
+        if pl and pl.name == "GODBLESSER":
+            pl.god_mode = not pl.god_mode
+            if pl.god_mode:
+                pl.hp = C.PLAYER_MAX_HP
 
     def set_state(self, pid, pos, h, p):
         pl = self.players.get(pid)
@@ -998,16 +1054,24 @@ class World:
         self.wave += 1
         now = time.time()
         immune_until = now + C.WAVE_IMMUNE_TIME
-        count = min(C.ANT_COUNT, C.WAVE_START + (self.wave - 1) * C.WAVE_GROWTH)
+
+        # масштабирование сложности по числу игроков
+        num_players = max(1, len(self.players))
+        scale = 1.0 + (num_players - 1) * C.PLAYER_DIFFICULTY_SCALE
+
+        base_count = min(C.ANT_COUNT, C.WAVE_START + (self.wave - 1) * C.WAVE_GROWTH)
+        count = min(round(C.ANT_COUNT * scale), round(base_count * scale))
         for _ in range(count):
             ant = Ant(self._next_ant_id, self._far_spawn_point())
             ant.spawn_immune_until = immune_until
             self.ants[self._next_ant_id] = ant
             self._next_ant_id += 1
+
         # синие неоновые муравьи-стрелки — появляются после 3-й волны
         if self.wave >= C.NEON_ANT_FROM_WAVE:
-            ncount = min(C.NEON_ANT_MAX,
-                         C.NEON_ANT_BASE + (self.wave - C.NEON_ANT_FROM_WAVE) * C.NEON_ANT_GROWTH)
+            nbase = min(C.NEON_ANT_MAX,
+                        C.NEON_ANT_BASE + (self.wave - C.NEON_ANT_FROM_WAVE) * C.NEON_ANT_GROWTH)
+            ncount = min(round(C.NEON_ANT_MAX * scale), round(nbase * scale))
             for _ in range(ncount):
                 na = NeonAnt(self._next_neon_id, now)
                 na.spawn_immune_until = immune_until
@@ -1016,9 +1080,34 @@ class World:
                 self._next_neon_id += 1
             self.events.append({"t": "event", "kind": "neon_wave",
                                 "wave": self.wave, "count": ncount})
+
+        # улыбающиеся тараканы с аэрозолем — с 7-й волны
+        if self.wave >= C.SMILE_ROACH_FROM_WAVE:
+            sbase = min(C.SMILE_ROACH_MAX,
+                        C.SMILE_ROACH_BASE + (self.wave - C.SMILE_ROACH_FROM_WAVE) * C.SMILE_ROACH_GROWTH)
+            scount = min(round(C.SMILE_ROACH_MAX * scale), round(sbase * scale))
+            for _ in range(scount):
+                sr = SmileRoach(self._next_smile_id, self._far_spawn_point())
+                sr.spawn_immune_until = immune_until
+                self.smile_roaches[self._next_smile_id] = sr
+                self._next_smile_id += 1
+
+        # волна с боссом
         if self.wave % C.BOSS_EVERY == 0:
-            self.boss = Boss(now)
-            self.events.append({"t": "event", "kind": "boss_spawn", "wave": self.wave})
+            respect_max = round(C.BOSS_RESPECT_MAX * scale)
+            if self.wave == C.DOUBLE_BOSS_WAVE:
+                # волна 9: два Папани с разных сторон
+                self.boss = Boss(now)
+                self.boss.respect_max = respect_max
+                self.boss2 = Boss(now, spawn_pos=C.BOSS_SPAWN_2)
+                self.boss2.respect_max = respect_max
+                self.events.append({"t": "event", "kind": "boss_spawn",
+                                    "wave": self.wave, "double": True})
+            else:
+                self.boss = Boss(now)
+                self.boss.respect_max = respect_max
+                self.events.append({"t": "event", "kind": "boss_spawn", "wave": self.wave})
+
         self.events.append({"t": "event", "kind": "wave", "wave": self.wave, "count": count})
         self._wave_pending = False
 
@@ -1035,13 +1124,14 @@ class World:
             if self._wave_pending and now >= self.next_wave_at:
                 self._start_wave()
             elif (not self._wave_pending and not self.ants
-                  and not self.neon_ants and self.boss is None):
+                  and not self.neon_ants and not self.smile_roaches
+                  and self.boss is None and self.boss2 is None):
                 self._wave_pending = True
                 self.next_wave_at = now + C.WAVE_DELAY
 
         self._update_player_vel(dt)
         # пересчёт flow-поля от живых игроков (общий граф для всех мобов)
-        if not frozen and (self.ants or self.boss):
+        if not frozen and (self.ants or self.boss or self.boss2 or self.smile_roaches):
             srcs = [pl.pos for pl in self.players.values() if not pl.dead]
             if srcs:
                 self.nav.compute(srcs)
@@ -1049,13 +1139,18 @@ class World:
             ant.update(dt, now, self.players, frozen, self.slit_event_active, self.nav)
         for na in self.neon_ants.values():
             na.update(dt, now, self.players, frozen)
+        for sr in self.smile_roaches.values():
+            sr.update(dt, now, self.players, frozen)
         if not frozen:
             self._neon_ant_shoot(now)
+            self._smile_roach_spray(now)
         if self.boss:
             self.boss.update(dt, now, self.players, frozen, self.nav, self.shots)
-            if not frozen:
-                self._boss_throw(now)
-                self._boss_gas(now)
+        if self.boss2:
+            self.boss2.update(dt, now, self.players, frozen, self.nav, self.shots)
+        if not frozen and (self.boss or self.boss2):
+            self._boss_throw(now)
+            self._boss_gas(now)
         self._update_boss_shots(dt, now)
         self._update_ant_shots(dt, now)
 
@@ -1115,10 +1210,25 @@ class World:
                         self._satisfy_slit(slit, now)
                         hit = True
                         break
-            # босс — только сироп копит уважение
+            # улыбающиеся тараканы — сироп убивает
+            if not hit and self.smile_roaches and shot.kind == C.WEAPON_SYRUP:
+                for srid, sr in list(self.smile_roaches.items()):
+                    if time.time() < sr.spawn_immune_until:
+                        continue
+                    if _dist2(shot.pos, [sr.pos[0], sr.pos[1], 0.5]) < (C.PROJECTILE_RADIUS + 0.9) ** 2:
+                        sr.hp -= 1
+                        if sr.hp <= 0:
+                            self._kill_smile_roach(srid, shot.owner, now)
+                        hit = True
+                        break
+            # босс (или оба Папани на волне 9) — только сироп копит уважение
             if not hit and self.boss and shot.kind == C.WEAPON_SYRUP:
                 if _dist2(shot.pos, [self.boss.pos[0], self.boss.pos[1], 1.2]) < 16.0:
-                    self._respect_boss(shot.owner, now)
+                    self._respect_boss(self.boss, shot.owner, now)
+                    hit = True
+            if not hit and self.boss2 and shot.kind == C.WEAPON_SYRUP:
+                if _dist2(shot.pos, [self.boss2.pos[0], self.boss2.pos[1], 1.2]) < 16.0:
+                    self._respect_boss(self.boss2, shot.owner, now)
                     hit = True
             # BLACK KING — сироп наносит HP-урон
             if not hit and self.bk_boss and shot.kind == C.WEAPON_SYRUP:
@@ -1232,6 +1342,43 @@ class World:
             self._next_drop_id += 1
             self.drops[did] = {"pos": [na.pos[0], na.pos[1], 0.0], "kind": kind}
 
+    def _kill_smile_roach(self, srid, owner_id, now):
+        sr = self.smile_roaches.pop(srid, None)
+        if not sr:
+            return
+        owner = self.players.get(owner_id)
+        if owner:
+            owner.score += 2
+            owner.kills_session += 1
+        self.events.append({"t": "event", "kind": "smile_roach_killed",
+                            "pos": [round(sr.pos[0], 2), round(sr.pos[1], 2)], "by": owner_id})
+        if random.random() < C.DROP_CHANCE:
+            kind = random.choices(_DROP_KINDS, _DROP_WEIGHTS)[0]
+            did = self._next_drop_id
+            self._next_drop_id += 1
+            self.drops[did] = {"pos": [sr.pos[0], sr.pos[1], 0.0], "kind": kind}
+
+    def _smile_roach_spray(self, now):
+        """Периодическое распыление аэрозоля вокруг улыбающихся тараканов."""
+        for sr in self.smile_roaches.values():
+            if now < sr.spray_at:
+                continue
+            sr.spray_at = now + C.SMILE_ROACH_SPRAY_INTERVAL
+            bx, by = sr.pos[0], sr.pos[1]
+            spray_r2 = C.SMILE_ROACH_SPRAY_RADIUS ** 2
+            # применять аэрозоль только если таракан достаточно близко
+            nearest = _nearest_player(self.players, sr.pos, C.SMILE_ROACH_SPRAY_RANGE)
+            if not nearest:
+                continue
+            for pl in self.players.values():
+                if pl.dead:
+                    continue
+                if (pl.pos[0] - bx) ** 2 + (pl.pos[1] - by) ** 2 < spray_r2:
+                    pl.move_slow_until = max(pl.move_slow_until, now + C.SMILE_ROACH_SLOW_TIME)
+            self.events.append({"t": "event", "kind": "smile_spray",
+                                "pos": [round(bx, 2), round(by, 2), 0.0],
+                                "radius": C.SMILE_ROACH_SPRAY_RADIUS})
+
     def _neon_ant_shoot(self, now):
         for na in self.neon_ants.values():
             if now < na.shoot_at:
@@ -1302,20 +1449,26 @@ class World:
                     break
 
     def _boss_throw(self, now):
-        interval = C.BOSS_THROW_INTERVAL_P2 if self.boss.phase == 2 else C.BOSS_THROW_INTERVAL
-        if now < self.boss.throw_at:
+        if self.boss:
+            self._boss_throw_one(self.boss, now)
+        if self.boss2:
+            self._boss_throw_one(self.boss2, now)
+
+    def _boss_throw_one(self, boss, now):
+        interval = C.BOSS_THROW_INTERVAL_P2 if boss.phase == 2 else C.BOSS_THROW_INTERVAL
+        if now < boss.throw_at:
             return
-        target = _nearest_player(self.players, self.boss.pos, 9999)
+        target = _nearest_player(self.players, boss.pos, 9999)
         if not target:
-            self.boss.throw_at = now + interval
+            boss.throw_at = now + interval
             return
-        # не бросать сквозь стену — ждём прямой видимости (босс к ней подходит по пути)
-        if line_blocked(self.boss.pos[0], self.boss.pos[1],
+        # не бросать сквозь стену — ждём прямой видимости
+        if line_blocked(boss.pos[0], boss.pos[1],
                         target.pos[0], target.pos[1], _LOS_RECTS):
-            self.boss.throw_at = now + 0.5
+            boss.throw_at = now + 0.5
             return
-        self.boss.throw_at = now + interval
-        origin = [self.boss.pos[0], self.boss.pos[1], 2.5]
+        boss.throw_at = now + interval
+        origin = [boss.pos[0], boss.pos[1], 2.5]
         bsid = self._next_boss_shot_id
         self._next_boss_shot_id += 1
         self.boss_shots[bsid] = BossShot(bsid, origin, target.pos, target.vel, now)
@@ -1323,11 +1476,17 @@ class World:
                             "pos": [round(origin[0], 2), round(origin[1], 2), 2.5]})
 
     def _boss_gas(self, now):
-        """Фаза 2: пульс ГАЗА — замедляет игроков в радиусе вокруг босса."""
-        if self.boss.phase != 2 or now < self.boss.gas_at:
+        """Фаза 2: пульс ГАЗА — замедляет игроков в радиусе вокруг боссов."""
+        if self.boss:
+            self._boss_gas_one(self.boss, now)
+        if self.boss2:
+            self._boss_gas_one(self.boss2, now)
+
+    def _boss_gas_one(self, boss, now):
+        if boss.phase != 2 or now < boss.gas_at:
             return
-        self.boss.gas_at = now + C.BOSS_GAS_INTERVAL
-        bx, by = self.boss.pos[0], self.boss.pos[1]
+        boss.gas_at = now + C.BOSS_GAS_INTERVAL
+        bx, by = boss.pos[0], boss.pos[1]
         r2 = C.BOSS_GAS_RADIUS ** 2
         for pl in self.players.values():
             if pl.dead:
@@ -1379,21 +1538,21 @@ class World:
                 if hasattr(mob, "vz"):
                     mob.vz = max(mob.vz, f * 0.8)   # подкинуть вверх (только у тараканов)
 
-    def _respect_boss(self, owner_id, now):
-        if not self.boss:
-            return
-        self.boss.respect += C.BOSS_RESPECT_PER_HIT
-        if self.boss.respect >= C.BOSS_RESPECT_MAX:
+    def _respect_boss(self, boss, owner_id, now):
+        boss.respect += C.BOSS_RESPECT_PER_HIT
+        if boss.respect >= boss.respect_max:
             owner = self.players.get(owner_id)
             for pl in self.players.values():
-                pl.score += 20            # «много ресурсов» всем
-            # дроп белого пластикового стакана на месте босса
+                pl.score += 20
             did = self._next_drop_id
             self._next_drop_id += 1
-            self.drops[did] = {"pos": [self.boss.pos[0], self.boss.pos[1], 0.0], "kind": "cup"}
+            self.drops[did] = {"pos": [boss.pos[0], boss.pos[1], 0.0], "kind": "cup"}
             self.events.append({"t": "event", "kind": "boss_defeated",
                                 "by": owner.name if owner else "?"})
-            self.boss = None
+            if boss is self.boss:
+                self.boss = None
+            elif boss is self.boss2:
+                self.boss2 = None
 
     # --- ЩЕЛЬ (настенный враг) ---
     def _spawn_slits(self, now):
@@ -1479,7 +1638,7 @@ class World:
 
     def _touch_damage(self, dt, now):
         for pl in self.players.values():
-            if pl.hp <= 0 or now < pl.touch_inv_until or now < pl.respawn_immune_until:
+            if pl.hp <= 0 or pl.god_mode or now < pl.touch_inv_until or now < pl.respawn_immune_until:
                 continue                      # короткий кулдаун или неуязвимость после воскрешения
             touch_dmg = 0
             # во время ЩЕЛИ тараканы не кусают — они просто ржут над игроком
@@ -1493,7 +1652,15 @@ class World:
                     if now >= na.spawn_immune_until and _dist2(pl.pos, na.pos) < C.ANT_TOUCH_RANGE ** 2:
                         touch_dmg = max(touch_dmg, C.ANT_TOUCH_DAMAGE)
                         break
+            if not touch_dmg:
+                for sr in self.smile_roaches.values():
+                    if (now >= sr.spawn_immune_until
+                            and _dist2(pl.pos, sr.pos) < C.ANT_TOUCH_RANGE ** 2):
+                        touch_dmg = max(touch_dmg, C.ANT_TOUCH_DAMAGE)
+                        break
             if self.boss and _dist2(pl.pos, self.boss.pos) < (C.ANT_TOUCH_RANGE + 1.5) ** 2:
+                touch_dmg = max(touch_dmg, C.ANT_TOUCH_DAMAGE)
+            if self.boss2 and _dist2(pl.pos, self.boss2.pos) < (C.ANT_TOUCH_RANGE + 1.5) ** 2:
                 touch_dmg = max(touch_dmg, C.ANT_TOUCH_DAMAGE)
             if self.bk_boss and _dist2(pl.pos, self.bk_boss.pos) < (C.ANT_TOUCH_RANGE + 1.5) ** 2:
                 touch_dmg = max(touch_dmg, C.BLACK_KING_TOUCH_DAMAGE)
@@ -1509,7 +1676,7 @@ class World:
     def _hurt(self, target, dmg, now, attacker_id):
         if target.dead:
             return
-        if now < target.respawn_immune_until:
+        if now < target.respawn_immune_until or target.god_mode:
             return
         target.hp -= dmg
         atk = self.players.get(attacker_id) if attacker_id is not None else None
@@ -1549,11 +1716,13 @@ class World:
             # очистить обычных врагов всегда
             self.ants.clear()
             self.neon_ants.clear()
+            self.smile_roaches.clear()
             self.ant_shots.clear()
             self.shots.clear()
             self.bees.clear()
             self.boss_shots.clear()
             self.boss = None
+            self.boss2 = None
             self.slits = {}
             self.slit_event_active = False
 
@@ -1611,6 +1780,8 @@ class World:
                       for did, d in self.drops.items()],
             "bshots": [s.snapshot() for s in self.boss_shots.values()],
             "boss": self.boss.snapshot() if self.boss else None,
+            "boss2": self.boss2.snapshot() if self.boss2 else None,
+            "smile_roaches": [sr.snapshot() for sr in self.smile_roaches.values()],
             "slits": [s.snapshot() for s in self.slits.values()],
             "slit_time": (round(max(0.0, self.slit_deadline - time.time()), 1)
                           if self.slit_event_active else 0.0),

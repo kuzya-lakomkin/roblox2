@@ -583,6 +583,11 @@ class Roblox2(ShowBase):
         self._roach_laugh_snd = None  # ржач тараканов во время щели (по окончании предыдущего)
         self.boss_node = None
         self._boss_is_model = False
+        self.boss2_node = None
+        self._boss2_is_model = False
+        self.boss2_bar = None
+        self.boss2_info = None
+        self.smile_roach_nodes = {}   # sid -> NodePath
         self.bk_boss_node = None
         self._bk_is_model = False
         self.bk_boss_bar = None
@@ -687,7 +692,7 @@ class Roblox2(ShowBase):
         self.remote.clear()
         for d in (self.ant_nodes, self.neon_ant_nodes, self.ant_shot_nodes,
                   self.shot_nodes, self.bee_nodes, self.drop_nodes,
-                  self.boss_shot_nodes, self.slit_nodes):
+                  self.boss_shot_nodes, self.slit_nodes, self.smile_roach_nodes):
             for n in d.values():
                 n.removeNode()
             d.clear()
@@ -706,6 +711,12 @@ class Roblox2(ShowBase):
         if self.boss_bar is not None:
             self.boss_bar.destroy()
             self.boss_bar = None
+        if self.boss2_node is not None:
+            self.boss2_node.removeNode()
+            self.boss2_node = None
+        if self.boss2_bar is not None:
+            self.boss2_bar.destroy()
+            self.boss2_bar = None
         if self.bk_boss_node is not None:
             self.bk_boss_node.removeNode()
             self.bk_boss_node = None
@@ -1500,6 +1511,8 @@ class Roblox2(ShowBase):
         self.accept(kb.get("ult",  "q"),      self._ultimate)
         self.accept(kb.get("place_cup", "r"), self._place_cup)
         self.accept(kb.get("camera", "c"),    self._toggle_camera)
+        # бесконечное HP для GODBLESSER (не в настройках управления)
+        self.accept("9", self._god_toggle)
         self.accept(kb.get("emote1", "f"), lambda: self._emote("flex"))
         self.accept(kb.get("emote2", "g"), lambda: self._emote("dance"))
         self.accept(kb.get("emote3", "v"), lambda: self._emote("wave"))
@@ -2004,6 +2017,12 @@ class Roblox2(ShowBase):
             else:
                 self._start_spray_sound()   # сменить луп на нужную жидкость
 
+    def _god_toggle(self):
+        if self.state != "COMBAT" or not self.net:
+            return
+        if self.player_name == "GODBLESSER":
+            self.net.send({"t": "god_toggle"})
+
     def _ultimate(self):
         if self.state != "COMBAT" or self.chat_active or self.is_dead or not self.net:
             return
@@ -2499,6 +2518,20 @@ class Roblox2(ShowBase):
             self._show_notice("ВАЙП  все погибли  начинаем с волны 1!",
                               color=(1.0, 0.2, 0.2, 1), duration=4.0)
             self._play_music(AC.MUSIC_PHASE1)
+        elif kind == "smile_roach_killed":
+            pos = msg.get("pos", [0, 0])
+            self.particles.burst([pos[0], pos[1], 0.4], count=10,
+                                 color=(0.7, 0.1, 0.1, 1), speed=4.5, size=0.22,
+                                 life=0.5, grav=-8.0, spread=1.0, up=0.9)
+            self._play_oneshot(AC.SFX_COCKROACH_DEATH, volume=self._vol_at(pos[0], pos[1]),
+                               rate=0.9)
+        elif kind == "smile_spray":
+            pos = msg.get("pos", [0, 0, 0])
+            # аэрозольное облако (жёлтоватое, медленно оседает)
+            for _ in range(2):
+                self.particles.burst([pos[0], pos[1], 1.0], count=8,
+                                     color=(0.9, 0.85, 0.2, 1), speed=3.5, size=0.35,
+                                     life=1.8, grav=-0.5, spread=1.2, up=0.6)
         elif kind == "boss_gas":
             pos = msg.get("pos", [0, 0])
             # облако едкого зелёного дыма ГАЗЗЗ
@@ -2652,6 +2685,8 @@ class Roblox2(ShowBase):
         self.alive_ants = msg.get("alive", 0)
         self.neon_alive = msg.get("neon", 0)
         self.boss_info = msg.get("boss")
+        self.boss2_info = msg.get("boss2")
+        self._last_smile_roaches = msg.get("smile_roaches", [])
         prev_bk = self.black_king
         self.black_king = bool(msg.get("black_king"))
         # при переподключении (black_king_spawn не придёт снова) — сразу включить музыку
@@ -3012,6 +3047,67 @@ class Roblox2(ShowBase):
                 self.boss_bar.destroy()
                 self.boss_bar = None
             self._prev_boss_respect = 0
+
+        # второй Папаня (только на волне 9)
+        if self.boss2_info:
+            if self.boss2_node is None:
+                old_flag = self._boss_is_model
+                self.boss2_node = self._make_boss_node()
+                self._boss2_is_model = self._boss_is_model
+                self._boss_is_model = old_flag
+                self.boss2_node.reparentTo(self.render)
+                self.boss2_bar = WorldBar(self.render, label="ПАПАНЯ", width=3.4,
+                                          height=0.44, fill_color=(1.0, 0.85, 0.2, 1),
+                                          font=self.fonts.get("world"))
+            bx, by, bz = self.boss2_info["pos"]
+            self.boss2_node.setPos(bx, by, bz)
+            self.boss2_bar.set_pos(bx, by, bz + 5.5)
+            h = self.boss2_info.get("h", 0.0)
+            if self._boss2_is_model:
+                h += AC.BOSS_MODEL_YAW
+            self.boss2_node.setH(h)
+            r, mx = self.boss2_info["respect"], self.boss2_info["max"]
+            self.boss2_bar.set_fraction(r / mx if mx else 0.0)
+            ph = self.boss2_info.get("phase", 1)
+            self.boss2_bar.set_label(f"ПАПАНЯ 2 ({ph} фаза) - {r}/{mx}")
+            if ph == 2:
+                self.particles.burst([bx, by, bz + 1.0], count=2,
+                                     color=(0.5, 0.92, 0.32, 1), speed=2.2,
+                                     size=0.5, life=1.6, grav=-0.6, spread=1.0, up=0.7)
+        elif self.boss2_node is not None:
+            self.boss2_node.removeNode()
+            self.boss2_node = None
+            if self.boss2_bar is not None:
+                self.boss2_bar.destroy()
+                self.boss2_bar = None
+
+        # улыбающиеся тараканы — обновляем ноды по снапшоту
+        # (snap доступен через последний msg.get в _apply_snapshot)
+        self._update_smile_roaches()
+
+    def _update_smile_roaches(self):
+        snap_srs = getattr(self, "_last_smile_roaches", [])
+        seen = set()
+        for sr_data in snap_srs:
+            sid, sx, sy, sh_val, shp, *_ = sr_data
+            seen.add(sid)
+            node = self.smile_roach_nodes.get(sid)
+            if node is None:
+                from client.procgen import make_smile_roach
+                node = make_smile_roach(scale=1.0)
+                node.reparentTo(self.render)
+                self.smile_roach_nodes[sid] = node
+            immune = len(sr_data) > 5 and sr_data[5]
+            if immune:
+                node.setColorScale(1, 1, 1, 0.4)
+            else:
+                node.setColorScale(1, 1, 1, 1)
+            node.setPos(sx, sy, 0.0)
+            node.setH(sh_val)
+        for sid in list(self.smile_roach_nodes):
+            if sid not in seen:
+                self.smile_roach_nodes[sid].removeNode()
+                del self.smile_roach_nodes[sid]
 
     def _update_cup_spots(self, spots):
         """Показать поставленные белые стаканы на 4 угловых пьедесталах."""

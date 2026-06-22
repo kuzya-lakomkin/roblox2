@@ -293,6 +293,37 @@ def make_cockroach(body_color=(0.28, 0.16, 0.1, 1), scale=1.0):
     return root
 
 
+def make_smile_roach(scale=1.0):
+    """Улыбающийся таракан: как обычный, но со светящимися красными глазами и
+    аэрозольным баллончиком на спине."""
+    root = NodePath("smile_roach")
+    # тело — чуть темнее обычного таракана
+    body = make_cockroach(body_color=(0.18, 0.10, 0.06, 1), scale=1.0)
+    body.reparentTo(root)
+
+    # красные светящиеся глаза (2 маленькие сферы на голове)
+    eye_color = (1.0, 0.05, 0.05, 1)
+    for side in (-1, 1):
+        eye = make_sphere(1.0, 4, 6, eye_color)
+        eye.reparentTo(root)
+        eye.setScale(0.07, 0.07, 0.06)
+        eye.setPos(side * 0.09, 0.56, 0.35)
+        eye.setLightOff(1)   # full-bright красные глаза
+
+    # маленький аэрозольный баллончик на спине (цилиндр + шар-крышка)
+    can_body = make_cylinder(0.06, 0.22, 8, (0.7, 0.7, 0.72, 1))
+    can_body.reparentTo(root)
+    can_body.setPos(0, -0.15, 0.5)
+    can_body.setHpr(0, 80, 0)
+    can_top = make_sphere(1.0, 4, 6, (0.55, 0.55, 0.6, 1))
+    can_top.reparentTo(root)
+    can_top.setScale(0.07, 0.07, 0.06)
+    can_top.setPos(0, -0.26, 0.58)
+
+    root.setScale(scale)
+    return root
+
+
 def make_neon_ant(scale=1.0):
     """Синий неоновый муравей-стрелок: тело таракана + светящиеся орбы (full-bright)."""
     root = NodePath("neon_ant")

@@ -166,6 +166,8 @@ class GameServer:
                         self.world.place_cup(pid)
                     elif t == "emote":
                         self.world.set_emote(pid, msg.get("emote"), msg.get("pet"))
+                    elif t == "god_toggle":
+                        self.world.toggle_god(pid)
         except (ConnectionResetError, asyncio.IncompleteReadError):
             pass
         finally:

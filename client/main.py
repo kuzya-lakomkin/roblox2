@@ -232,7 +232,7 @@ class RemoteAvatar:
         self.nametag.setDepthOffset(1)
 
         # HP-бар под ником (маленькая полоска здоровья, видна всем кроме самого игрока)
-        from client.procgen import make_box as _mb
+        from client.primitives import make_box as _mb
         self._hp_bar_root = self.root.attachNewNode(f"hpbar{pid}")
         self._hp_bar_root.setZ(2.55)
         self._hp_bar_root.setBillboardPointEye()

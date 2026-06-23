@@ -382,10 +382,12 @@ def make_wormchello_head(face_texture=None, hair_model=None):
             h_height = max(mx.z - mn.z, 0.01)
             s = (head_r * 3.4) / h_height
             hair.setScale(s)
-            hair.setZ(head_r - mn.z * s - 0.5)
+            hair.setH(180)
+            hair.setZ(head_r - mn.z * s - head_r * 2)
         except Exception:
             hair.setScale(head_r * 2.0)
-            hair.setZ(head_r - 0.5)
+            hair.setH(180)
+            hair.setZ(-head_r)
         hair.setLightOff(1)
     else:
         # процедурная причёска: ряд стренд-цилиндров на макушке с наклоном вперёд

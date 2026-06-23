@@ -216,6 +216,7 @@ WORMCHELLO_MINION_INTERVAL = 5.0 # секунд между пачками тар
 WORMCHELLO_MINION_MIN = 3        # минимум тараканов в одной пачке
 WORMCHELLO_MINION_MAX = 6        # максимум тараканов в одной пачке
 WORMCHELLO_CUTSCENE_DURATION = 10.0  # секунд кат-сцены (первый спавн — после этого)
+WORMCHELLO_GRACE_PERIOD = 5.0        # секунд без атак ПОСЛЕ кат-сцены (итого 15с)
 WORMCHELLO_MINION_ANTS = 1       # устарело, не используется (оставлено для CLAUDE.md)
 WORMCHELLO_SCORE = 50            # очки победителям
 WORMCHELLO_DESCEND_SPEED = 12.0  # скорость погружения в нору

@@ -631,15 +631,16 @@ class WormChello:
         hx, hy = self.HOLES[0]
         self.pos = [hx, hy, -4.0]
         self.h = 0.0
+        _grace = C.WORMCHELLO_CUTSCENE_DURATION + C.WORMCHELLO_GRACE_PERIOD  # 15с без атак
         self.shoot_at = now + 999.0   # отключена до первого PEEKING
-        self.state_until = now + 3.5  # задержка для кат-сцены
-        self.spawn_minion_at = now + C.WORMCHELLO_CUTSCENE_DURATION  # первые тараканы — после кат-сцены
+        self.state_until = now + _grace  # первое выглядывание — строго после кат-сцены + паузы
+        self.spawn_minion_at = now + _grace  # тараканы тоже не раньше
         self.body_trail = [[hx, hy, -4.0]] * 32
         self.slither_pts = []
         self.slither_idx = 0
-        # ЛИНА сферы — первые выстрелы разведены по времени
+        # ЛИНА сферы — начинают стрелять только после окончания грейс-периода
         self.lina_spheres = [
-            LinaSphere(list(p), shoot_delay=now + 5.0 + i * 1.2)
+            LinaSphere(list(p), shoot_delay=now + _grace + i * 1.2)
             for i, p in enumerate(C.LINA_SPHERE_POSITIONS)
         ]
         self.descent_new_hole = 0

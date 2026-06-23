@@ -440,7 +440,9 @@ class MainMenu(Screen):
         self._color_btns = []
         sw = 0.056   # ширина свотча
         gap = 0.010
-        row_start = 0.07  # начало ряда (правее центра)
+        n_colors = len(_COLOR_PRESETS)
+        total_w = n_colors * sw + (n_colors - 1) * gap
+        row_start = -total_w / 2 + sw / 2  # центрировано относительно 0
         for i, col in enumerate(_COLOR_PRESETS):
             cx = row_start + i * (sw + gap)
             btn = DirectButton(
@@ -484,9 +486,12 @@ class MainMenu(Screen):
 
     def _pick_color(self, col, idx):
         self.app.player_color = list(col)
+        # применить цвет к локальному червю немедленно (если игровая сцена построена)
+        lw = getattr(self.app, "local_worm", None)
+        if lw is not None:
+            lw.set_body_color(col)
         old = self._sel_idx
         self._sel_idx = idx
-        # сбросить масштаб предыдущего выбранного
         if old is not None and old != idx and old < len(self._color_btns):
             self._animate(self._color_btns[old], 1.0, 1.0)
         self._animate(self._color_btns[idx], 1.08, 1.0)

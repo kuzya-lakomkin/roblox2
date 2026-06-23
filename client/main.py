@@ -191,6 +191,14 @@ class WormModel:
         self.anim.setZ(self.anim.getZ() + (z_t - self.anim.getZ()) * min(1.0, 10 * dt))
         self.head.setP(self.head.getP() + (p_head - self.head.getP()) * min(1.0, 12 * dt))
 
+    def set_body_color(self, color):
+        """Сменить цвет тела (r, g, b) — применяется немедленно без пересборки геометрии."""
+        r, g, b = color[0], color[1], color[2]
+        for i, seg in enumerate(self.segs):
+            s = i / (self.N - 1)
+            shade = 0.82 + 0.18 * s
+            seg.setColor(r * shade, g * shade, b * shade, 1)
+
     def destroy(self):
         self.root.removeNode()
 
@@ -754,7 +762,8 @@ class Roblox2(ShowBase):
         self._boss_voice_at = 0.0    # когда следующая реплика босса
 
         # локальный червь (анимированный — игрок видит и свои анимации тоже)
-        self.local_worm = WormModel(body_color=(0.35, 0.95, 0.80, 1))
+        _pc = self.player_color
+        self.local_worm = WormModel(body_color=(_pc[0], _pc[1], _pc[2], 1))
         self.local_worm.root.reparentTo(self.render)
         # отброс взрывом босса (горизонтальный импульс, затухает) + тряска камеры
         self.knockback = Vec3(0, 0, 0)

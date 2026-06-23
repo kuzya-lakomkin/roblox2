@@ -2717,7 +2717,8 @@ class Roblox2(ShowBase):
             self._play_oneshot(AC.SFX_WORMCHELLO_DEATH)
             self._play_music(AC.MUSIC_PHASE1)
         elif kind == "wormchello_minions":
-            self._show_notice("Червячелло вызывает тараканов!", color=(0.9, 0.5, 0.1, 1), duration=2.0)
+            n = msg.get("count", 3)
+            self._show_notice(f"Червячелло вызывает {n} тараканов!", color=(0.9, 0.5, 0.1, 1), duration=2.0)
         elif kind == "wormchello_lina_hit":
             pos = msg.get("pos", [0, 0, 5])
             self.particles.burst(pos, count=20,
@@ -2871,6 +2872,10 @@ class Roblox2(ShowBase):
                                  size=0.5, life=1.5, grav=-2.0, spread=1.0, up=0.7)
         elif kind == "slit_failed":
             self._show_notice("Не успели...  щель поглотила всех!", color=(1.0, 0.1, 0.1, 1), duration=4.0)
+        elif kind == "slit_dismissed":
+            # Щель убрана из-за появления Червячелло — сбрасываем состояние немедленно
+            self.slit_time = 0.0
+            # ноды и музыка щели очистятся через ближайший снапшот автоматически
         elif kind == "skibidi_hit":
             pos = msg.get("pos", [0, 0, 0])
             self.particles.burst([pos[0], pos[1], pos[2] + 0.2], count=14,

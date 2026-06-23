@@ -633,7 +633,7 @@ class WormChello:
         self.h = 0.0
         self.shoot_at = now + 999.0   # отключена до первого PEEKING
         self.state_until = now + 3.5  # задержка для кат-сцены
-        self.spawn_minion_at = now + 10.0  # первые тараканы не сразу
+        self.spawn_minion_at = now + C.WORMCHELLO_CUTSCENE_DURATION  # первые тараканы — после кат-сцены
         self.body_trail = [[hx, hy, -4.0]] * 32
         self.slither_pts = []
         self.slither_idx = 0
@@ -1330,38 +1330,51 @@ class World:
         num_players = max(1, len(self.players))
         scale = 1.0 + (num_players - 1) * C.PLAYER_DIFFICULTY_SCALE
 
-        base_count = min(C.ANT_COUNT, C.WAVE_START + (self.wave - 1) * C.WAVE_GROWTH)
-        count = min(round(C.ANT_COUNT * scale), round(base_count * scale))
-        for _ in range(count):
-            ant = Ant(self._next_ant_id, self._far_spawn_point())
-            ant.spawn_immune_until = immune_until
-            self.ants[self._next_ant_id] = ant
-            self._next_ant_id += 1
+        is_wc_wave = (self.wave == C.WORMCHELLO_WAVE)
 
-        # синие неоновые муравьи-стрелки — появляются после 3-й волны
-        if self.wave >= C.NEON_ANT_FROM_WAVE:
-            nbase = min(C.NEON_ANT_MAX,
-                        C.NEON_ANT_BASE + (self.wave - C.NEON_ANT_FROM_WAVE) * C.NEON_ANT_GROWTH)
-            ncount = min(round(C.NEON_ANT_MAX * scale), round(nbase * scale))
-            for _ in range(ncount):
-                na = NeonAnt(self._next_neon_id, now)
-                na.spawn_immune_until = immune_until
-                na.pos = list(self._far_spawn_point()) + [0.0]
-                self.neon_ants[self._next_neon_id] = na
-                self._next_neon_id += 1
-            self.events.append({"t": "event", "kind": "neon_wave",
-                                "wave": self.wave, "count": ncount})
+        if is_wc_wave:
+            # Волна 12 — ЧЕРВЯЧЕЛЛО: обычные враги НЕ спавнятся при старте волны.
+            # Если активна щель — немедленно убираем её (без убийства игроков).
+            if self.slit_event_active:
+                self.slits = {}
+                self.slit_event_active = False
+                self.events.append({"t": "event", "kind": "slit_dismissed"})
+            # Щели не появятся в течение всего боя с Червячелло
+            self.next_slit_at = now + 99999.0
+            count = 0
+        else:
+            base_count = min(C.ANT_COUNT, C.WAVE_START + (self.wave - 1) * C.WAVE_GROWTH)
+            count = min(round(C.ANT_COUNT * scale), round(base_count * scale))
+            for _ in range(count):
+                ant = Ant(self._next_ant_id, self._far_spawn_point())
+                ant.spawn_immune_until = immune_until
+                self.ants[self._next_ant_id] = ant
+                self._next_ant_id += 1
 
-        # улыбающиеся тараканы с аэрозолем — с 7-й волны
-        if self.wave >= C.SMILE_ROACH_FROM_WAVE:
-            sbase = min(C.SMILE_ROACH_MAX,
-                        C.SMILE_ROACH_BASE + (self.wave - C.SMILE_ROACH_FROM_WAVE) * C.SMILE_ROACH_GROWTH)
-            scount = min(round(C.SMILE_ROACH_MAX * scale), round(sbase * scale))
-            for _ in range(scount):
-                sr = SmileRoach(self._next_smile_id, self._far_spawn_point())
-                sr.spawn_immune_until = immune_until
-                self.smile_roaches[self._next_smile_id] = sr
-                self._next_smile_id += 1
+            # синие неоновые муравьи-стрелки — появляются после 3-й волны
+            if self.wave >= C.NEON_ANT_FROM_WAVE:
+                nbase = min(C.NEON_ANT_MAX,
+                            C.NEON_ANT_BASE + (self.wave - C.NEON_ANT_FROM_WAVE) * C.NEON_ANT_GROWTH)
+                ncount = min(round(C.NEON_ANT_MAX * scale), round(nbase * scale))
+                for _ in range(ncount):
+                    na = NeonAnt(self._next_neon_id, now)
+                    na.spawn_immune_until = immune_until
+                    na.pos = list(self._far_spawn_point()) + [0.0]
+                    self.neon_ants[self._next_neon_id] = na
+                    self._next_neon_id += 1
+                self.events.append({"t": "event", "kind": "neon_wave",
+                                    "wave": self.wave, "count": ncount})
+
+            # улыбающиеся тараканы с аэрозолем — с 7-й волны
+            if self.wave >= C.SMILE_ROACH_FROM_WAVE:
+                sbase = min(C.SMILE_ROACH_MAX,
+                            C.SMILE_ROACH_BASE + (self.wave - C.SMILE_ROACH_FROM_WAVE) * C.SMILE_ROACH_GROWTH)
+                scount = min(round(C.SMILE_ROACH_MAX * scale), round(sbase * scale))
+                for _ in range(scount):
+                    sr = SmileRoach(self._next_smile_id, self._far_spawn_point())
+                    sr.spawn_immune_until = immune_until
+                    self.smile_roaches[self._next_smile_id] = sr
+                    self._next_smile_id += 1
 
         # волна с боссом
         if self.wave % C.BOSS_EVERY == 0:
@@ -1743,11 +1756,13 @@ class World:
                                         round(ls.pos[2], 2)]})
 
     def _wormchello_spawn_minions(self, now):
-        # спавн по одному таракану за раз
-        ant = Ant(self._next_ant_id, self._far_spawn_point())
-        ant.spawn_immune_until = now + 1.5
-        self.ants[self._next_ant_id] = ant
-        self._next_ant_id += 1
+        n = random.randint(C.WORMCHELLO_MINION_MIN, C.WORMCHELLO_MINION_MAX)
+        for _ in range(n):
+            ant = Ant(self._next_ant_id, self._far_spawn_point())
+            ant.spawn_immune_until = now + 1.5
+            self.ants[self._next_ant_id] = ant
+            self._next_ant_id += 1
+        self.events.append({"t": "event", "kind": "wormchello_minions", "count": n})
 
     def _defeat_wormchello(self, owner_id, now):
         wc = self.wormchello

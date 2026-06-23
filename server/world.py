@@ -1292,11 +1292,13 @@ class World:
                     # очистить всех обычных мобов — начинается фаза BLACK KING
                     self.ants.clear()
                     self.neon_ants.clear()
+                    self.smile_roaches.clear()
                     self.ant_shots.clear()
                     self.shots.clear()
                     self.bees.clear()
                     self.boss_shots.clear()
                     self.boss = None
+                    self.boss2 = None
                     self.slits = {}
                     self.slit_event_active = False
                     self._wave_pending = False   # волны больше не спавнятся

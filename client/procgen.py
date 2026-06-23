@@ -380,15 +380,12 @@ def make_wormchello_head(face_texture=None, hair_model=None):
         try:
             mn, mx = hair.getTightBounds()
             h_height = max(mx.z - mn.z, 0.01)
-            # целевая высота волос = диаметр головы, чтобы было хорошо видно
-            s = (head_r * 2.0) / h_height
+            s = (head_r * 3.4) / h_height
             hair.setScale(s)
-            # после масштабирования пересчитываем нижнюю границу
-            mn2, _ = hair.getTightBounds()
-            # основание волос = верх головы-сферы (z = head_r)
-            hair.setZ(head_r - mn2.z)
+            # явно используем pre-scale mn.z * s, чтобы низ модели оказался ровно на макушке
+            hair.setZ(head_r - mn.z * s)
         except Exception:
-            hair.setScale(head_r * 1.2)
+            hair.setScale(head_r * 2.0)
             hair.setZ(head_r)
         hair.setLightOff(1)
     else:

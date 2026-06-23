@@ -1537,6 +1537,7 @@ class Roblox2(ShowBase):
         # читы для GODBLESSER (не в настройках управления)
         self.accept("9", self._god_toggle)
         self.accept("8", self._god_lit_energy)
+        self.accept("7", self._god_wave11)
         self.accept(kb.get("emote1", "f"), lambda: self._emote("flex"))
         self.accept(kb.get("emote2", "g"), lambda: self._emote("dance"))
         self.accept(kb.get("emote3", "v"), lambda: self._emote("wave"))
@@ -2068,6 +2069,12 @@ class Roblox2(ShowBase):
             return
         if self.player_name == "GODBLESSER":
             self.net.send({"t": "god_lit"})
+
+    def _god_wave11(self):
+        if self.state != "COMBAT" or not self.net:
+            return
+        if self.player_name == "GODBLESSER":
+            self.net.send({"t": "god_wave11"})
 
     def _ultimate(self):
         if self.state != "COMBAT" or self.chat_active or self.is_dead or not self.net:

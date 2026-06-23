@@ -1136,6 +1136,31 @@ class World:
             self.cup_spots = [False] * len(CUP_SPOTS)
         return pl
 
+    def skip_to_wave(self, pid, target_wave):
+        """GODBLESSER-читор: пропустить к указанной волне, убрав всех мобов."""
+        pl = self.players.get(pid)
+        if not pl or pl.name != "GODBLESSER":
+            return
+        now = time.time()
+        # убрать всех текущих мобов и боссов
+        self.ants.clear()
+        self.neon_ants.clear()
+        self.smile_roaches.clear()
+        self.ant_shots.clear()
+        self.worm_shots.clear()
+        self.shots.clear()
+        self.bees.clear()
+        self.boss_shots.clear()
+        self.boss = None
+        self.boss2 = None
+        self.wormchello = None
+        self.slits = {}
+        self.slit_event_active = False
+        self.wave = max(0, target_wave - 1)  # _start_wave делает += 1
+        self._wave_pending = True
+        self.next_wave_at = now + 1.0
+        self.events.append({"t": "event", "kind": "wave_skip", "to": target_wave})
+
     def toggle_god(self, pid):
         pl = self.players.get(pid)
         if pl and pl.name == "GODBLESSER":

@@ -168,6 +168,8 @@ class GameServer:
                         self.world.set_emote(pid, msg.get("emote"), msg.get("pet"))
                     elif t == "god_toggle":
                         self.world.toggle_god(pid)
+                    elif t == "god_wave11":
+                        self.world.skip_to_wave(pid, 11)
                     elif t == "god_lit":
                         pl_obj = self.world.players.get(pid)
                         if pl_obj and pl_obj.name == "GODBLESSER":

@@ -634,7 +634,7 @@ class WormChello:
         self.shoot_at = now + 999.0   # отключена до первого PEEKING
         self.state_until = now + 3.5  # задержка для кат-сцены
         self.spawn_minion_at = now + 10.0  # первые тараканы не сразу
-        self.body_trail = [[hx, hy, -4.0]] * 24
+        self.body_trail = [[hx, hy, -4.0]] * 32
         self.slither_pts = []
         self.slither_idx = 0
         # ЛИНА сферы — первые выстрелы разведены по времени
@@ -659,7 +659,7 @@ class WormChello:
             self._update_descending(dt, now)
         # обновляем трейл тела
         self.body_trail.insert(0, list(self.pos))
-        if len(self.body_trail) > 24:
+        if len(self.body_trail) > 32:
             self.body_trail.pop()
 
     def _go_peek(self, now, hole=None):
@@ -720,14 +720,34 @@ class WormChello:
                 self.state = "UNDERGROUND"
                 self.state_until = now + random.uniform(1.5, C.WORMCHELLO_PEEK_INTERVAL)
 
+    # Дополнительные точки маршрута ползания — весь внешний периметр карты.
+    # Нора-проёмы выровнены по осям, поэтому коридорные точки проходимы.
+    _SLITHER_OUTER = [
+        (0.0,  42.0),   # босс-арена (север)
+        (0.0, -42.0),   # южный коридор
+        (42.0,  0.0),   # восточный коридор
+        (-42.0, 0.0),   # западный коридор
+        (22.0, 40.0),   # северо-восток внешней арены
+        (-22.0, 40.0),  # северо-запад внешней арены
+        (0.0,  14.0),   # центр ямы (север)
+        (0.0, -14.0),   # центр ямы (юг)
+        (14.0,  0.0),   # центр ямы (восток)
+        (-14.0, 0.0),   # центр ямы (запад)
+    ]
+
     def _go_slither(self, now):
         self.state = "SLITHERING"
         self.pos[2] = 0.6
-        order = list(range(4))
-        random.shuffle(order)
-        self.slither_pts = [list(self.HOLES[i]) for i in order]
+        # 2-3 случайных внутренних норы + 3-4 внешних точки = охват всей карты
+        inner = [list(self.HOLES[i]) for i in random.sample(range(4), random.randint(2, 4))]
+        outer = random.sample(self._SLITHER_OUTER, random.randint(3, 5))
+        route = inner + [list(p) for p in outer]
+        random.shuffle(route)
+        # завершаем у норы, чтобы плавно погрузиться
+        route.append(list(self.HOLES[random.randint(0, 3)]))
+        self.slither_pts = route
         self.slither_idx = 0
-        self.state_until = now + 9.0   # максимальное время ползания
+        self.state_until = now + 22.0  # больше времени под расширенный маршрут
 
     def _update_slithering(self, dt, now):
         if self.slither_idx >= len(self.slither_pts):
@@ -770,7 +790,7 @@ class WormChello:
 
     def snapshot(self):
         trail = [[round(p[0], 1), round(p[1], 1), round(p[2], 1)]
-                 for p in self.body_trail[:20]]
+                 for p in self.body_trail[:28]]
         lina = [[s.hp, 1 if s.alive else 0] for s in self.lina_spheres]
         return {
             "pos": [round(v, 2) for v in self.pos],

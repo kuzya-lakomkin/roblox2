@@ -73,6 +73,8 @@ SLIT_TEXTURE = _t("slit.png")
 # Текстура лица ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО: положи assets/textures/wormchello_face.png
 # Центр картинки = центр лица (нос). Если файла нет — голова без текстуры.
 WORMCHELLO_FACE_TEXTURE = _t("wormchello_face.png")
+# 3D-модель волос ЧЕРВЯЧЕЛЛО (assets/models/wormchello_hair.glb). Нет файла → процедурная причёска.
+WORMCHELLO_HAIR_MODEL = os.path.join(MODELS_DIR, "wormchello_hair.glb")
 PLAYER_BASE_TEXTURE = _t("player_base.png")
 COCKROACH_TEXTURE = _t("cockroach.png")
 BOSS_TEXTURE = _t("boss_papanya.png")

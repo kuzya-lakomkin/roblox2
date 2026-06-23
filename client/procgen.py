@@ -354,11 +354,11 @@ def make_bk_minion(scale=0.9):
     return root
 
 
-def make_wormchello_head(face_texture=None):
+def make_wormchello_head(face_texture=None, hair_model=None):
     """Голова ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО — большая телесного цвета сфера с причёской.
 
-    face_texture: уже загруженная Texture или None. Если задана, натягивается
-    так, что центр картинки = перёд головы (при heading=0 голова смотрит в +Y).
+    face_texture: уже загруженная Texture или None.
+    hair_model: загруженный NodePath glb-модели волос или None (→ процедурные стренды).
     """
     from panda3d.core import TextureStage
     root = NodePath("wormchello_head")
@@ -370,28 +370,44 @@ def make_wormchello_head(face_texture=None):
     head_np.reparentTo(root)
     if face_texture:
         head_np.setTexture(face_texture)
-        # сдвиг UV: U=0.25 = направление +Y (перёд) → попадает на центр текстуры (U=0.5)
         ts = TextureStage.getDefault()
         head_np.setTexOffset(ts, (0.25, 0.0))
 
-    # причёска: ряд стренд-цилиндров на макушке с наклоном вперёд
-    hair = (0.22, 0.14, 0.08, 1)
-    strands = [
-        # (x,  y,    z,   rx  rz  len)  — rx=наклон вперёд, rz=в стороны
-        (0.00, 0.10, head_r * 0.88, -25,  0, 0.60),
-        (0.30, 0.05, head_r * 0.82, -30, -12, 0.52),
-        (-0.30, 0.05, head_r * 0.82, -30, 12, 0.52),
-        (0.55, 0.0,  head_r * 0.72, -35, -22, 0.44),
-        (-0.55, 0.0, head_r * 0.72, -35, 22, 0.44),
-        (0.15, -0.15, head_r * 0.85, -20, -6, 0.56),
-        (-0.15, -0.15, head_r * 0.85, -20, 6, 0.56),
-    ]
-    for (sx, sy, sz, rx, rz, slen) in strands:
-        strand = make_cylinder(0.10, slen, 5, hair)
-        strand.reparentTo(root)
-        strand.setPos(sx, sy, sz)
-        strand.setHpr(rz, rx, 0)
-        strand.setLightOff(1)  # full-bright чтобы волосы были видны
+    if hair_model is not None:
+        # glb-модель волос: нормализуем высоту под диаметр головы, крепим на макушку
+        hair = hair_model.copyTo(root)
+        hair.clearTransform()
+        try:
+            mn, mx = hair.getTightBounds()
+            h_size = max((mx - mn).length(), 0.01)
+            target = head_r * 1.4   # волосы чуть крупнее головы
+            hair.setScale(target / h_size)
+            # сдвигаем вниз так, чтобы основание сидело на макушке
+            mn2, _ = hair.getTightBounds()
+            hair.setZ(head_r - mn2.z)
+        except Exception:
+            hair.setScale(head_r * 0.9)
+            hair.setZ(head_r * 0.7)
+        hair.setLightOff(1)
+    else:
+        # процедурная причёска: ряд стренд-цилиндров на макушке с наклоном вперёд
+        hair_col = (0.22, 0.14, 0.08, 1)
+        strands = [
+            # (x,  y,    z,   rx  rz  len)
+            (0.00, 0.10, head_r * 0.88, -25,  0, 0.60),
+            (0.30, 0.05, head_r * 0.82, -30, -12, 0.52),
+            (-0.30, 0.05, head_r * 0.82, -30, 12, 0.52),
+            (0.55, 0.0,  head_r * 0.72, -35, -22, 0.44),
+            (-0.55, 0.0, head_r * 0.72, -35, 22, 0.44),
+            (0.15, -0.15, head_r * 0.85, -20, -6, 0.56),
+            (-0.15, -0.15, head_r * 0.85, -20, 6, 0.56),
+        ]
+        for (sx, sy, sz, rx, rz, slen) in strands:
+            strand = make_cylinder(0.10, slen, 5, hair_col)
+            strand.reparentTo(root)
+            strand.setPos(sx, sy, sz)
+            strand.setHpr(rz, rx, 0)
+            strand.setLightOff(1)
 
     return root
 

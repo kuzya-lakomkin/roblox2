@@ -452,7 +452,6 @@ class MainMenu(Screen):
                 command=self._pick_color,
                 extraArgs=[col, i],
                 borderWidth=(0.004, 0.004),
-                frameColorEffect=None,
             )
             btn.bind(DGG.WITHIN,    self._on_swatch_enter, [btn])
             btn.bind(DGG.WITHOUT,   self._on_swatch_exit,  [btn])

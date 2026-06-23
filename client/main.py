@@ -681,6 +681,7 @@ class Roblox2(ShowBase):
         self._wc_cs_holes_shown = False
         self._wc_cs_announced = False
         self._wc_aerial_t = 0.0      # время в AERIAL (для анимации роста)
+        self._wc_anim_t = 0.0        # общий таймер процедурных анимаций
         self.bk_boss_node = None
         self._bk_is_model = False
         self.bk_boss_bar = None
@@ -3371,12 +3372,13 @@ class Roblox2(ShowBase):
     def _init_wormchello_nodes(self):
         from client.procgen import (make_wormchello_head, make_wormchello_segment,
                                     make_lina_sphere)
-        from client.assets import load_texture, texture_exists
+        from client.assets import load_texture, texture_exists, load_model
         from common.config import LINA_SPHERE_POSITIONS
         face_tex = None
         if texture_exists(AC.WORMCHELLO_FACE_TEXTURE):
             face_tex = load_texture(self.loader, AC.WORMCHELLO_FACE_TEXTURE)
-        self._wc_head_node = make_wormchello_head(face_tex)
+        hair_mdl = load_model(self.loader, AC.WORMCHELLO_HAIR_MODEL)
+        self._wc_head_node = make_wormchello_head(face_tex, hair_model=hair_mdl)
         self._wc_head_node.reparentTo(self.render)
         # 8 сегментов тела (размер уменьшается к хвосту)
         flesh = (0.88, 0.68, 0.54, 1)
@@ -3464,6 +3466,9 @@ class Roblox2(ShowBase):
         if self._wc_head_node is None:
             self._init_wormchello_nodes()
 
+        dt_now = getattr(self, "_last_dt", 0.033)
+        self._wc_anim_t += dt_now
+
         state = info.get("state", "UNDERGROUND")
         px, py, pz = info["pos"]
         hp, max_hp = info["hp"], info["max"]
@@ -3472,10 +3477,12 @@ class Roblox2(ShowBase):
         target_h = info.get("h", 0.0)
         lina_data = info.get("lina", [])
 
+        t = self._wc_anim_t
+
         # плавная интерполяция позиции и поворота (только когда видно)
         visible = state not in ("UNDERGROUND",)
         if visible:
-            lerp = min(1.0, 10.0 * getattr(self, "_last_dt", 0.033))
+            lerp = min(1.0, 10.0 * dt_now)
             for i in range(3):
                 self._wc_pos_interp[i] += (info["pos"][i] - self._wc_pos_interp[i]) * lerp
             dh = target_h - self._wc_h_interp
@@ -3483,29 +3490,46 @@ class Roblox2(ShowBase):
             while dh < -180: dh += 360
             self._wc_h_interp += dh * lerp
         else:
-            # пока под землёй — сбросить интерполятор к реальной позиции
             self._wc_pos_interp[:] = list(info["pos"])
             self._wc_h_interp = target_h
 
         ipx, ipy, ipz = self._wc_pos_interp
 
         # --- ГОЛОВА ---
-        dt_now = getattr(self, "_last_dt", 0.033)
         if state == "AERIAL":
-            # Голова растёт на потолке с 0 до огромного размера
             self._wc_aerial_t += dt_now
             max_scale = 6.0
             grow_t = min(1.0, self._wc_aerial_t / 1.5)
             cur_scale = max_scale * grow_t * grow_t
+            # медленное вращение во время воздушной фазы
+            aerial_h = self._wc_h_interp + 18.0 * _m.sin(t * 0.7)
+            aerial_p = 12.0 * _m.sin(t * 1.1)
             self._wc_head_node.show()
             self._wc_head_node.setPos(ipx, ipy, ipz)
-            self._wc_head_node.setH(self._wc_h_interp)
+            self._wc_head_node.setHpr(aerial_h, aerial_p, 0)
             self._wc_head_node.setScale(max(0.05, cur_scale))
-        elif visible:
+        elif state == "PEEKING" or state == "DESCENDING":
             self._wc_aerial_t = 0.0
+            # плавное извивание в дырке: покачивание головой вправо/влево (roll) и
+            # лёгкий кивок (pitch) + небольшой сдвиг позиции
+            squirm_r = 6.0 * _m.sin(t * 2.3)
+            squirm_p = 8.0 * _m.sin(t * 1.7 + 0.9)
+            squirm_x = 0.08 * _m.sin(t * 3.1)
+            squirm_y = 0.06 * _m.cos(t * 2.5 + 1.2)
+            squirm_z = 0.07 * _m.sin(t * 2.0)
+            head_h = self._wc_h_interp + 4.0 * _m.sin(t * 1.4)
+            self._wc_head_node.show()
+            self._wc_head_node.setPos(ipx + squirm_x, ipy + squirm_y, ipz + squirm_z)
+            self._wc_head_node.setHpr(head_h, squirm_p, squirm_r)
+            self._wc_head_node.setScale(1.0)
+        elif state == "SLITHERING":
+            self._wc_aerial_t = 0.0
+            # лёгкий крен головы в такт движению змеи
+            slither_r = 10.0 * _m.sin(t * 4.5)
+            slither_p = 5.0 * _m.sin(t * 3.8 + 0.5)
             self._wc_head_node.show()
             self._wc_head_node.setPos(ipx, ipy, ipz)
-            self._wc_head_node.setH(self._wc_h_interp)
+            self._wc_head_node.setHpr(self._wc_h_interp, slither_p, slither_r)
             self._wc_head_node.setScale(1.0)
         else:
             self._wc_aerial_t = 0.0
@@ -3513,41 +3537,73 @@ class Roblox2(ShowBase):
 
         # --- ТЕЛО ---
         if state == "SLITHERING":
-            # ползание: первый сегмент начинается ЧЕРЕЗ 5 точек после головы,
-            # чтобы голова и первый сег визуально разделились
+            # Применяем синусоидальный боковой сдвиг к точкам трейла — snake wiggle.
+            # Перпендикуляр к направлению движения вычисляем из соседних точек трейла.
             for i, seg_np in enumerate(self._wc_seg_nodes):
                 tidx = 5 + i * 3
                 if tidx < len(trail):
                     tx, ty, tz = trail[tidx]
+                    # направление движения в данной точке
+                    nidx = max(0, tidx - 3)
+                    pidx = min(len(trail) - 1, tidx + 3)
+                    if nidx != pidx:
+                        fdx = trail[nidx][0] - trail[pidx][0]
+                        fdy = trail[nidx][1] - trail[pidx][1]
+                        fd = _m.hypot(fdx, fdy)
+                        if fd > 0.01:
+                            # перпендикуляр (право)
+                            px_perp = -fdy / fd
+                            py_perp =  fdx / fd
+                            # бегущая синусоидальная волна: фаза = t*freq - i*0.8
+                            wiggle = 0.55 * _m.sin(t * 5.0 - i * 0.9)
+                            tx += px_perp * wiggle
+                            ty += py_perp * wiggle
+                    # лёгкое вертикальное покачивание
+                    tz += 0.12 * _m.sin(t * 4.2 - i * 0.7)
                     seg_np.show()
                     seg_np.setPos(tx, ty, tz)
-                    seg_np.setScale(max(0.55, 1.1 - i * 0.07))
+                    # масштаб слегка пульсирует
+                    base_scale = max(0.55, 1.1 - i * 0.07)
+                    pulse_s = base_scale * (1.0 + 0.06 * _m.sin(t * 5.0 - i * 0.7))
+                    seg_np.setScale(pulse_s)
                     # поворот к следующей точке трейла
-                    nidx = tidx + 3
-                    if nidx < len(trail):
-                        nx_pt, ny_pt = trail[nidx][0], trail[nidx][1]
+                    nidx2 = tidx + 3
+                    if nidx2 < len(trail):
+                        nx_pt, ny_pt = trail[nidx2][0], trail[nidx2][1]
                         dx_s = tx - nx_pt; dy_s = ty - ny_pt
                         if _m.hypot(dx_s, dy_s) > 0.01:
                             seg_np.setH(_m.degrees(_m.atan2(-dx_s, dy_s)))
                 else:
                     seg_np.hide()
         elif state == "AERIAL":
-            # в воздушной фазе тело не рисуем (голова на потолке)
             for seg_np in self._wc_seg_nodes:
                 seg_np.hide()
-        elif visible:
-            # PEEKING / DESCENDING — тело висит вертикально ниже головы
+        elif state in ("PEEKING", "DESCENDING"):
+            # тело висит вертикально ниже головы, с плавным извиванием
             n_show = min(len(self._wc_seg_nodes), 6)
+            h_rad = _m.radians(self._wc_h_interp)
             for i, seg_np in enumerate(self._wc_seg_nodes):
                 if i >= n_show:
                     seg_np.hide()
                     continue
                 seg_z = ipz - (i + 1) * 1.6
                 r_scale = max(0.4, 1.0 - i * 0.07)
+                # боковой сдвиг в плоскости перпендикулярной направлению
+                sway_amp = 0.22 * (1.0 - i / n_show)
+                phase_off = i * 0.55
+                sway = sway_amp * _m.sin(t * 2.8 + phase_off)
+                # перпендикуляр к heading (вправо относительно взгляда)
+                sx = -_m.sin(h_rad + _m.pi / 2) * sway
+                sy =  _m.cos(h_rad + _m.pi / 2) * sway
+                # продольное извивание (вперёд-назад)
+                sway2 = 0.12 * _m.sin(t * 3.5 + phase_off + 1.2)
+                sx += _m.cos(h_rad) * sway2
+                sy += _m.sin(h_rad) * sway2
                 seg_np.show()
-                seg_np.setPos(ipx, ipy, seg_z)
+                seg_np.setPos(ipx + sx, ipy + sy, seg_z)
                 seg_np.setScale(r_scale)
-                seg_np.setH(self._wc_h_interp)
+                seg_np.setHpr(self._wc_h_interp + 6.0 * _m.sin(t * 2.1 + i * 0.4),
+                               4.0 * _m.sin(t * 2.5 - i * 0.3), 0)
         else:
             for seg_np in self._wc_seg_nodes:
                 seg_np.hide()
@@ -3557,13 +3613,12 @@ class Roblox2(ShowBase):
         if not cs_running:
             for n in self._wc_hole_nodes:
                 n.show()
-        # пока кат-сцена — видимостью нор управляет _update_wc_filter
 
         # --- СФЕРЫ ЛИНА ---
         from common.config import LINA_SPHERE_POSITIONS
         cs_lina_ok = not cs_running or getattr(self, "_wc_cs_lina_shown", False)
         self._wc_lina_pulse_t = getattr(self, "_wc_lina_pulse_t", 0.0)
-        self._wc_lina_pulse_t += getattr(self, "_last_dt", 0.033)
+        self._wc_lina_pulse_t += dt_now
         pulse = 0.85 + 0.15 * _m.sin(self._wc_lina_pulse_t * 3.0)
         for i, (lnode, lbar) in enumerate(zip(self._wc_lina_nodes, self._wc_lina_bars)):
             if i < len(lina_data):

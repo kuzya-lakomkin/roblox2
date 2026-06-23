@@ -435,22 +435,29 @@ class MainMenu(Screen):
             frameColor=(0.10, 0.09, 0.05, 0.85), text_fg=TEXT, **nick_kw,
         )
 
-        # выбор цвета игрока (8 свотчей в ряд)
-        self._label("Цвет:", (-0.30, 0, 0.18), scale=0.038, color=ACCENT)
+        # выбор цвета игрока (8 свотчей в ряд, сдвинуты правее)
+        self._label("Цвет:", (0.0, 0, 0.175), scale=0.038, color=ACCENT)
         self._color_btns = []
-        sw = 0.052  # ширина свотча
+        sw = 0.056   # ширина свотча
+        gap = 0.010
+        row_start = 0.07  # начало ряда (правее центра)
         for i, col in enumerate(_COLOR_PRESETS):
-            cx = -0.26 + i * (sw + 0.008)
+            cx = row_start + i * (sw + gap)
             btn = DirectButton(
                 parent=self.root,
                 frameSize=(-sw/2, sw/2, -sw/2, sw/2),
-                pos=(cx, 0, 0.18),
+                pos=(cx, 0, 0.175),
                 frameColor=col + (1,),
-                relief=1,
+                relief=DGG.FLAT,
                 command=self._pick_color,
                 extraArgs=[col, i],
-                borderWidth=(0.005, 0.005),
+                borderWidth=(0.004, 0.004),
+                frameColorEffect=None,
             )
+            btn.bind(DGG.WITHIN,    self._on_swatch_enter, [btn])
+            btn.bind(DGG.WITHOUT,   self._on_swatch_exit,  [btn])
+            btn.bind(DGG.B1PRESS,   self._on_swatch_press, [btn])
+            btn.bind(DGG.B1RELEASE, self._on_swatch_enter, [btn])
             self._color_btns.append(btn)
         self._sel_idx = None
         self._refresh_color_selection(app)
@@ -464,19 +471,33 @@ class MainMenu(Screen):
             ("Выход", app.quit_game),
         ], top_y=0.08)
 
+    # ---- анимации свотчей ----
+    def _on_swatch_enter(self, btn, _=None):
+        self._animate(btn, 1.12, 1.0)
+
+    def _on_swatch_exit(self, btn, _=None):
+        idx = self._color_btns.index(btn) if btn in self._color_btns else -1
+        s = 1.08 if idx == self._sel_idx else 1.0
+        self._animate(btn, s, 1.0)
+
+    def _on_swatch_press(self, btn, _=None):
+        self._animate(btn, 0.90, 0.80)
+
     def _pick_color(self, col, idx):
         self.app.player_color = list(col)
+        old = self._sel_idx
         self._sel_idx = idx
-        for i, btn in enumerate(self._color_btns):
-            bw = 0.010 if i == idx else 0.003
-            btn["borderWidth"] = (bw, bw)
+        # сбросить масштаб предыдущего выбранного
+        if old is not None and old != idx and old < len(self._color_btns):
+            self._animate(self._color_btns[old], 1.0, 1.0)
+        self._animate(self._color_btns[idx], 1.08, 1.0)
 
     def _refresh_color_selection(self, app):
         pc = app.player_color
         for i, col in enumerate(_COLOR_PRESETS):
             if all(abs(pc[j] - col[j]) < 0.05 for j in range(3)):
                 self._sel_idx = i
-                self._color_btns[i]["borderWidth"] = (0.010, 0.010)
+                self._color_btns[i].setScale(1.08)
                 break
 
     def get_name(self):

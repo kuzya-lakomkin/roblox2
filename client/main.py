@@ -675,6 +675,7 @@ class Roblox2(ShowBase):
         self._wc_h_interp = 0.0                   # интерполяция heading
         self._wc_night_alpha = 0.0
         self._wc_lina_pulse_t = 0.0  # таймер пульса сфер
+        self._wc_cutscene = False    # идёт ли кат-сцена прямо сейчас
         self._wc_cutscene_t = -1.0   # таймер кат-сцены (<0 = неактивна)
         self._wc_cs_lina_shown = False
         self._wc_cs_holes_shown = False
@@ -856,6 +857,7 @@ class Roblox2(ShowBase):
             self._wc_night_overlay.setColor(0.08, 0.0, 0.18, 0)
             self._wc_night_overlay.hide()
         self._wc_night_alpha = 0.0
+        self._wc_cutscene = False
         for n in self.cup_spot_nodes:
             n.removeNode()
         self.cup_spot_nodes = []
@@ -2245,7 +2247,7 @@ class Roblox2(ShowBase):
             self._add_chat_line(f"[СЕТЬ] {self.net.error}")
             self.net.error = None
 
-        controllable = (self.state == "COMBAT") and not self._bk_cutscene
+        controllable = (self.state == "COMBAT") and not self._bk_cutscene and not self._wc_cutscene
         if controllable:
             self._mouse_look()
             self._update_firing(dt)
@@ -2267,7 +2269,7 @@ class Roblox2(ShowBase):
         self._update_bk_death_cutscene(dt)
         self._update_bk_wipe(dt)
         self._update_notices(dt)
-        if not self._bk_cutscene and not self._bk_death_cs:
+        if not self._bk_cutscene and not self._bk_death_cs and not self._wc_cutscene:
             self._apply_camera(dt)
         # сироп льётся из угловых стаканов во время фазы BLACK KING
         if self.black_king and not self._bk_cutscene:
@@ -3448,6 +3450,7 @@ class Roblox2(ShowBase):
         self._wc_pos_interp = [0.0, 0.0, -4.0]
         self._wc_h_interp = 0.0
         self._wc_aerial_t = 0.0
+        self._wc_cutscene = False
         self._wc_cutscene_t = -1.0
 
     def _update_wormchello_rendering(self):
@@ -3550,7 +3553,7 @@ class Roblox2(ShowBase):
                 seg_np.hide()
 
         # --- НОРЫ (показывать пока босс активен, но не во время вступительной кат-сцены) ---
-        cs_running = getattr(self, "_wc_cutscene_t", -1.0) >= 0
+        cs_running = getattr(self, "_wc_cutscene", False)
         if not cs_running:
             for n in self._wc_hole_nodes:
                 n.show()
@@ -3558,7 +3561,7 @@ class Roblox2(ShowBase):
 
         # --- СФЕРЫ ЛИНА ---
         from common.config import LINA_SPHERE_POSITIONS
-        cs_lina_ok = not cs_running or getattr(self, "_wc_cs_lina_shown", True)
+        cs_lina_ok = not cs_running or getattr(self, "_wc_cs_lina_shown", False)
         self._wc_lina_pulse_t = getattr(self, "_wc_lina_pulse_t", 0.0)
         self._wc_lina_pulse_t += getattr(self, "_last_dt", 0.033)
         pulse = 0.85 + 0.15 * _m.sin(self._wc_lina_pulse_t * 3.0)
@@ -3622,65 +3625,121 @@ class Roblox2(ShowBase):
                 del self.worm_shot_nodes[wsid]
 
     def _update_wc_filter(self, dt):
-        """Фиолетовый фильтр + поэтапная кат-сцена ЧЕРВЯЧЕЛЛО (таймер)."""
+        """Фиолетовый фильтр + кинематографическая кат-сцена ЧЕРВЯЧЕЛЛО."""
+        import math as _m
         if not hasattr(self, "_wc_night_overlay"):
             return
-        # фиолетовый фильтр
-        target = 0.35 if self.wormchello_info else 0.0
-        self._wc_night_alpha += (target - self._wc_night_alpha) * min(1.0, 2.5 * dt)
-        if self._wc_night_alpha > 0.005:
-            self._wc_night_overlay.setColor(0.08, 0.0, 0.18, self._wc_night_alpha)
-            self._wc_night_overlay.show()
-        else:
-            self._wc_night_overlay.hide()
-        # кат-сцена
-        if self._wc_cutscene_t < 0:
+
+        # ---- НЕ ИДЁТ КАТ-СЦЕНА: обычный фиолетовый фильтр ----
+        if not self._wc_cutscene:
+            target = 0.35 if self.wormchello_info else 0.0
+            self._wc_night_alpha += (target - self._wc_night_alpha) * min(1.0, 2.5 * dt)
+            if self._wc_night_alpha > 0.005:
+                self._wc_night_overlay.setColor(0.08, 0.0, 0.18, self._wc_night_alpha)
+                self._wc_night_overlay.show()
+            else:
+                self._wc_night_overlay.hide()
             return
+
+        # ---- ИДЁТ КАТ-СЦЕНА ----
         self._wc_cutscene_t += dt
         t = self._wc_cutscene_t
         from common.config import LINA_SPHERE_POSITIONS, WORMCHELLO_HOLES
-        # t=1.2 — появление сфер ЛИНА
-        if t >= 1.2 and not self._wc_cs_lina_shown:
-            self._wc_cs_lina_shown = True
-            self._show_notice("Уничтожь сферы LEAN!", color=(0.3, 0.85, 1.0, 1), duration=5.0)
-            for i, n in enumerate(self._wc_lina_nodes):
-                n.show()
-                lx, ly, lz = LINA_SPHERE_POSITIONS[i]
-                self.particles.burst([lx, ly, lz], count=20,
-                                     color=(0.3, 0.75, 1.0, 1), speed=5.0,
-                                     size=0.35, life=1.1, grav=-5.0, spread=1.4, up=1.0)
-            self._shake(0.4)
-        # t=2.8 — дыры в полу
-        if t >= 2.8 and not self._wc_cs_holes_shown:
-            self._wc_cs_holes_shown = True
-            for n in self._wc_hole_nodes:
-                n.show()
-            for (hx, hy) in WORMCHELLO_HOLES:
-                self.particles.burst([hx, hy, 0.2], count=20,
-                                     color=(0.38, 0.28, 0.12, 1), speed=5.0,
-                                     size=0.3, life=1.0, grav=-6.0, spread=1.2, up=1.2)
-            self._shake(0.7)
-        # t=4.2 — анонс босса
-        if t >= 4.2 and not self._wc_cs_announced:
-            self._wc_cs_announced = True
-            self._show_notice("ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО!", color=(0.95, 0.45, 0.1, 1), duration=4.5)
-        # кат-сцена заканчивается через 8с
-        if t >= 8.0:
-            self._wc_cutscene_t = -1.0
+
+        # центр арены — ориентир камеры
+        cx0, cy0, cz0 = 0.0, 0.0, 0.0
+
+        # --- ФАЗА 0 (0..1.8с): затемнение до темноты, стоп-кадр ---
+        if t < 1.8:
+            a = min(0.95, t / 0.8)
+            self._wc_night_alpha = a
+            self._wc_night_overlay.setColor(0.05, 0.0, 0.12, a)
+            self._wc_night_overlay.show()
+            if hasattr(self, "hud_root"):
+                self.hud_root.hide()
+            return
+
+        # с этого момента HUD скрыт, ночной фильтр держим на 0.40
+        self._wc_night_alpha = 0.40
+        self._wc_night_overlay.setColor(0.08, 0.0, 0.18, 0.40)
+        self._wc_night_overlay.show()
+
+        # --- ФАЗА 1 (1.8..5с): камера облетает центральную арену сверху ---
+        if t < 5.0:
+            frac = (t - 1.8) / 3.2
+            angle = _m.radians(60 + frac * 120)
+            r = 28.0
+            cam_x = cx0 + _m.cos(angle) * r
+            cam_y = cy0 + _m.sin(angle) * r * 0.75
+            cam_z = 14.0 + frac * 4.0
+            self.camera.setPos(cam_x, cam_y, cam_z)
+            self.camera.lookAt(cx0, cy0, 1.5)
+            self.camera.setR(0)
+            return
+
+        # --- ФАЗА 2 (5..7с): камера опускается к дырам в полу, дыры появляются ---
+        if t < 7.0:
+            frac = (t - 5.0) / 2.0
+            angle = _m.radians(180 + frac * 40)
+            r = 22.0 - frac * 8.0
+            cam_x = cx0 + _m.cos(angle) * r
+            cam_y = cy0 + _m.sin(angle) * r
+            cam_z = 14.0 - frac * 8.0
+            self.camera.setPos(cam_x, cam_y, cam_z)
+            self.camera.lookAt(cx0, cy0, 0.0)
+            self.camera.setR(0)
+            # t=5.2: дыры в полу
+            if not self._wc_cs_holes_shown:
+                self._wc_cs_holes_shown = True
+                for n in self._wc_hole_nodes:
+                    n.show()
+                for (hx, hy) in WORMCHELLO_HOLES:
+                    self.particles.burst([hx, hy, 0.2], count=25,
+                                         color=(0.38, 0.28, 0.12, 1), speed=6.0,
+                                         size=0.32, life=1.1, grav=-6.0, spread=1.2, up=1.4)
+                self._shake(0.8)
+            # t=5.8: сферы LEAN
+            if t >= 5.8 and not self._wc_cs_lina_shown:
+                self._wc_cs_lina_shown = True
+                self._show_notice("Уничтожь сферы LEAN!", color=(0.3, 0.85, 1.0, 1), duration=5.0)
+                for i, n in enumerate(self._wc_lina_nodes):
+                    n.show()
+                    lx, ly, lz = LINA_SPHERE_POSITIONS[i]
+                    self.particles.burst([lx, ly, lz], count=22,
+                                         color=(0.3, 0.75, 1.0, 1), speed=5.5,
+                                         size=0.35, life=1.1, grav=-5.0, spread=1.4, up=1.0)
+                self._shake(0.5)
+            return
+
+        # --- ФАЗА 3 (7..9с): анонс имени, финальная вспышка ---
+        if t < 9.0:
+            frac = (t - 7.0) / 2.0
+            self.camera.setPos(cx0, cy0 - 24, 8.0 + frac * 6.0)
+            self.camera.lookAt(cx0, cy0, 1.5)
+            self.camera.setR(0)
+            if not self._wc_cs_announced:
+                self._wc_cs_announced = True
+                self._show_notice("ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО!", color=(0.95, 0.45, 0.1, 1), duration=5.0)
+                self._flash_screen((0.1, 0.0, 0.25, 1), 1.2, hold=0.3)
+                self._shake(0.5)
+            return
+
+        # --- КОНЕЦ КАТ-СЦЕНЫ (>= 9с) ---
+        self._wc_cutscene = False
+        self._wc_cutscene_t = -1.0
+        self._wc_night_alpha = 0.35
+        if hasattr(self, "local_worm"):
+            self.local_worm.root.unstash()
+        if hasattr(self, "hud_root"):
+            self.hud_root.show()
 
     def _wormchello_cutscene(self, msg):
-        """Кат-сцена появления ЧЕРВЯЧЕЛЛО — таймерная (надёжная без doMethodLater)."""
-        import random as _r
-
-        # телепорт игрока в центр
-        if self.state == "COMBAT":
-            self.pos.set(_r.uniform(-4, 4), _r.uniform(-4, 4), 0.1)
-
+        """Кат-сцена появления ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО (9с с кинематографической камерой)."""
         # инициализировать ноды если ещё нет
         if self._wc_head_node is None:
             self._init_wormchello_nodes()
 
-        # скрыть — будут показаны поэтапно через таймер в _update_wc_filter
+        # скрыть — будут показаны поэтапно в _update_wc_filter
         for n in self._wc_hole_nodes:
             n.hide()
         for n in self._wc_lina_nodes:
@@ -3693,13 +3752,19 @@ class Roblox2(ShowBase):
         self._wc_cs_holes_shown = False
         self._wc_cs_announced = False
 
-        # шаг 0: немедленно — вспышка, тряска, звук, музыка
-        self._flash_screen((0.0, 0.0, 0.0, 1), 0.9)
-        self._shake(0.6)
+        # сташируем червя и скрываем HUD (как в BK кат-сцене)
+        if hasattr(self, "local_worm"):
+            self.local_worm.root.stash()
+        if hasattr(self, "hud_root"):
+            self.hud_root.hide()
+
+        # немедленные эффекты
+        self._shake(0.7)
         self._play_oneshot(AC.SFX_WORMCHELLO_SPAWN)
         self._play_music(AC.MUSIC_WORMCHELLO)
 
-        # запуск таймера (остальные этапы в _update_wc_filter)
+        # запуск кат-сцены
+        self._wc_cutscene = True
         self._wc_cutscene_t = 0.0
 
     def _update_cup_spots(self, spots):

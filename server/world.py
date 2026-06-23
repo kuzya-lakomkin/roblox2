@@ -1543,16 +1543,7 @@ class World:
                         self._kill_bk_minion(mid, shot.owner, now)
                         hit = True
                         break
-            # другие игроки
-            if not hit:
-                for tid, target in self.players.items():
-                    if tid == shot.owner or target.hp <= 0:
-                        continue
-                    tc = [target.pos[0], target.pos[1], target.pos[2] + C.PLAYER_HEIGHT / 2]
-                    if _dist2(shot.pos, tc) < (C.PROJECTILE_RADIUS + 0.7) ** 2:
-                        self._hurt(target, C.PROJECTILE_DAMAGE, now, shot.owner, cause="player")
-                        hit = True
-                        break
+            # игроки не получают урон от снарядов других игроков (нет friendly fire)
             # снаряд врезался в стену -> разрушается (стрелять сквозь стены нельзя)
             wall = (not hit) and _hits_wall(shot.pos)
             if hit or wall or shot.pos[2] <= 0.0 or now >= shot.die_at:

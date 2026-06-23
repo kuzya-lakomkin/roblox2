@@ -1591,7 +1591,8 @@ class World:
 
     def _update_bees(self, dt, now):
         dead = []
-        targets = list(self.ants.values()) + list(self.neon_ants.values())
+        targets = (list(self.ants.values()) + list(self.neon_ants.values())
+                   + list(self.smile_roaches.values()))
         no_targets = not targets
         for bid, bee in self.bees.items():
             bee.update(dt, targets)
@@ -1605,6 +1606,16 @@ class World:
                 for nid, na in list(self.neon_ants.items()):
                     if _dist2(bee.pos, na.pos) < 1.0:
                         self._hurt_neon_ant(nid, bee.owner, now)
+                        stung = True
+                        break
+            if not stung:
+                for srid, sr in list(self.smile_roaches.items()):
+                    if now < sr.spawn_immune_until:
+                        continue
+                    if _dist2(bee.pos, [sr.pos[0], sr.pos[1], 0.0]) < 1.0:
+                        sr.hp -= 1
+                        if sr.hp <= 0:
+                            self._kill_smile_roach(srid, bee.owner, now)
                         stung = True
                         break
             if no_targets:

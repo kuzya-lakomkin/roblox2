@@ -382,24 +382,23 @@ def make_wormchello_head(face_texture=None, hair_model=None):
             h_height = max(mx.z - mn.z, 0.01)
             s = (head_r * 3.4) / h_height
             hair.setScale(s)
-            # явно используем pre-scale mn.z * s, чтобы низ модели оказался ровно на макушке
-            hair.setZ(head_r - mn.z * s)
+            hair.setZ(head_r - mn.z * s - 0.5)
         except Exception:
             hair.setScale(head_r * 2.0)
-            hair.setZ(head_r)
+            hair.setZ(head_r - 0.5)
         hair.setLightOff(1)
     else:
         # процедурная причёска: ряд стренд-цилиндров на макушке с наклоном вперёд
         hair_col = (0.22, 0.14, 0.08, 1)
         strands = [
             # (x,  y,    z,   rx  rz  len)
-            (0.00, 0.10, head_r * 0.88, -25,  0, 0.60),
-            (0.30, 0.05, head_r * 0.82, -30, -12, 0.52),
-            (-0.30, 0.05, head_r * 0.82, -30, 12, 0.52),
-            (0.55, 0.0,  head_r * 0.72, -35, -22, 0.44),
-            (-0.55, 0.0, head_r * 0.72, -35, 22, 0.44),
-            (0.15, -0.15, head_r * 0.85, -20, -6, 0.56),
-            (-0.15, -0.15, head_r * 0.85, -20, 6, 0.56),
+            (0.00, 0.10, head_r * 0.88 - 0.3, -25,  0, 0.60),
+            (0.30, 0.05, head_r * 0.82 - 0.3, -30, -12, 0.52),
+            (-0.30, 0.05, head_r * 0.82 - 0.3, -30, 12, 0.52),
+            (0.55, 0.0,  head_r * 0.72 - 0.3, -35, -22, 0.44),
+            (-0.55, 0.0, head_r * 0.72 - 0.3, -35, 22, 0.44),
+            (0.15, -0.15, head_r * 0.85 - 0.3, -20, -6, 0.56),
+            (-0.15, -0.15, head_r * 0.85 - 0.3, -20, 6, 0.56),
         ]
         for (sx, sy, sz, rx, rz, slen) in strands:
             strand = make_cylinder(0.10, slen, 5, hair_col)

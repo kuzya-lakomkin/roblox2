@@ -668,6 +668,7 @@ class Roblox2(ShowBase):
         self.boss2_bar = None
         self.boss2_info = None
         self.smile_roach_nodes = {}   # sid -> NodePath
+        self._smile_immune_prev = {}  # sid -> bool, кэш alpha-состояния
         # ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО
         self.wormchello_info = None
         self._wc_head_node = None     # голова (всегда один узел)
@@ -3369,17 +3370,23 @@ class Roblox2(ShowBase):
                 node = make_smile_roach(scale=1.0)
                 node.reparentTo(self.render)
                 self.smile_roach_nodes[sid] = node
-            immune = len(sr_data) > 5 and sr_data[5]
-            if immune:
-                node.setColorScale(1, 1, 1, 0.4)
-            else:
-                node.setColorScale(1, 1, 1, 1)
+            immune = len(sr_data) > 5 and bool(sr_data[5])
+            _si = immune
+            if self._smile_immune_prev.get(sid) != _si:
+                self._smile_immune_prev[sid] = _si
+                if _si:
+                    node.setTransparency(TransparencyAttrib.MAlpha)
+                    node.setAlphaScale(0.35)
+                else:
+                    node.setTransparency(TransparencyAttrib.MNone)
+                    node.setAlphaScale(1.0)
             node.setPos(sx, sy, 0.0)
             node.setH(sh_val)
         for sid in list(self.smile_roach_nodes):
             if sid not in seen:
                 self.smile_roach_nodes[sid].removeNode()
                 del self.smile_roach_nodes[sid]
+                self._smile_immune_prev.pop(sid, None)
 
     # ---------------------------------------------------------------- Wormchello
 

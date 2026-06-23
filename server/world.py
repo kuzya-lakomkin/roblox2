@@ -564,13 +564,15 @@ class AntShot:
 
 
 class LinaSphere:
-    """Светящаяся сфера ЛИНА — щит первой фазы ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО."""
-    __slots__ = ("pos", "hp", "alive")
+    """Светящаяся сфера ЛИНА — щит первой фазы ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО.
+    Периодически стреляет снарядами в ближайшего игрока."""
+    __slots__ = ("pos", "hp", "alive", "shoot_at")
 
-    def __init__(self, pos):
+    def __init__(self, pos, shoot_delay=0.0):
         self.pos = list(pos)
         self.hp = C.LINA_SPHERE_HP
         self.alive = True
+        self.shoot_at = shoot_delay
 
 
 class WormShot:
@@ -612,7 +614,7 @@ class WormChello:
     __slots__ = ("pos", "hp", "max_hp", "phase", "state", "hole_idx",
                  "h", "shoot_at", "state_until", "spawn_minion_at",
                  "body_trail", "slither_pts", "slither_idx",
-                 "lina_spheres", "descent_new_hole")
+                 "lina_spheres", "descent_new_hole", "aerial_after_descent")
 
     def __init__(self, now):
         self.hp = C.WORMCHELLO_HP
@@ -625,12 +627,17 @@ class WormChello:
         self.h = 0.0
         self.shoot_at = now + 999.0   # отключена до первого PEEKING
         self.state_until = now + 3.5  # задержка для кат-сцены
-        self.spawn_minion_at = now + C.WORMCHELLO_MINION_INTERVAL + 5.0
+        self.spawn_minion_at = now + 10.0  # первые тараканы не сразу
         self.body_trail = [[hx, hy, -4.0]] * 24
         self.slither_pts = []
         self.slither_idx = 0
-        self.lina_spheres = [LinaSphere(list(p)) for p in C.LINA_SPHERE_POSITIONS]
+        # ЛИНА сферы — первые выстрелы разведены по времени
+        self.lina_spheres = [
+            LinaSphere(list(p), shoot_delay=now + 5.0 + i * 1.2)
+            for i, p in enumerate(C.LINA_SPHERE_POSITIONS)
+        ]
         self.descent_new_hole = 0
+        self.aerial_after_descent = False
 
     def update(self, dt, now, players):
         if self.state == "UNDERGROUND":
@@ -672,7 +679,9 @@ class WormChello:
             self.h = math.degrees(math.atan2(-dx, dy))
         if now >= self.state_until:
             if self.phase == 2 and random.random() < C.WORMCHELLO_AERIAL_CHANCE:
-                self._go_aerial(now)
+                # сначала опускаемся в нору, потом — потолочная атака
+                new_hole = (self.hole_idx + random.randint(1, 3)) % 4
+                self._go_descend(now, new_hole, aerial_after=True)
             elif random.random() < C.WORMCHELLO_SLITHER_CHANCE:
                 self._go_slither(now)
             else:
@@ -683,10 +692,11 @@ class WormChello:
         new_hole = (self.hole_idx + random.randint(1, 3)) % 4
         self._go_descend(now, new_hole)
 
-    def _go_descend(self, now, new_hole_idx):
-        """Начать погружение в нору (DESCENDING), потом уйти под землю."""
+    def _go_descend(self, now, new_hole_idx, aerial_after=False):
+        """Начать погружение в нору (DESCENDING)."""
         self.state = "DESCENDING"
         self.descent_new_hole = new_hole_idx
+        self.aerial_after_descent = aerial_after
         self.shoot_at = now + 999.0
 
     def _update_descending(self, dt, now):
@@ -697,8 +707,12 @@ class WormChello:
             self.hole_idx = self.descent_new_hole
             hx, hy = self.HOLES[self.hole_idx]
             self.pos[0] = hx; self.pos[1] = hy
-            self.state = "UNDERGROUND"
-            self.state_until = now + random.uniform(1.5, C.WORMCHELLO_PEEK_INTERVAL)
+            if self.aerial_after_descent:
+                self.aerial_after_descent = False
+                self._go_aerial(now)
+            else:
+                self.state = "UNDERGROUND"
+                self.state_until = now + random.uniform(1.5, C.WORMCHELLO_PEEK_INTERVAL)
 
     def _go_slither(self, now):
         self.state = "SLITHERING"
@@ -730,18 +744,23 @@ class WormChello:
 
     def _go_aerial(self, now):
         self.state = "AERIAL"
-        # поднимается над центром арены
-        self.pos[0] = random.uniform(-6.0, 6.0)
-        self.pos[1] = random.uniform(-6.0, 6.0)
-        self.pos[2] = 1.0  # начнёт подниматься в update
-        self.shoot_at = now + 0.6
+        # голова появляется прямо на потолке над центром арены
+        self.pos[0] = 0.0
+        self.pos[1] = 0.0
+        self.pos[2] = C.WORMCHELLO_AERIAL_Z
+        self.h = 0.0
+        self.shoot_at = now + 0.8  # небольшая пауза перед началом стрельбы
         self.state_until = now + C.WORMCHELLO_AERIAL_DURATION
 
     def _update_aerial(self, dt, now):
-        if self.pos[2] < C.WORMCHELLO_AERIAL_Z:
-            self.pos[2] = min(C.WORMCHELLO_AERIAL_Z, self.pos[2] + 20.0 * dt)
         if now >= self.state_until:
-            self._go_underground(now)
+            # уходим под землю (без предварительного descend — уже на потолке)
+            new_hole = random.randint(0, 3)
+            self.hole_idx = new_hole
+            hx, hy = self.HOLES[new_hole]
+            self.pos = [hx, hy, -4.0]
+            self.state = "UNDERGROUND"
+            self.state_until = now + random.uniform(1.5, C.WORMCHELLO_PEEK_INTERVAL)
 
     def snapshot(self):
         trail = [[round(p[0], 1), round(p[1], 1), round(p[2], 1)]
@@ -1655,20 +1674,27 @@ class World:
         if wc.phase == 1 and wc.hp <= wc.max_hp * C.WORMCHELLO_PHASE2_FRAC:
             wc.phase = 2
             self.events.append({"t": "event", "kind": "wormchello_phase2"})
-        # стрельба
+        # стрельба боссом
         if wc.state in ("PEEKING", "AERIAL") and now >= wc.shoot_at:
             interval = (C.WORMCHELLO_AERIAL_SHOOT_INT
                         if wc.state == "AERIAL" else C.WORMCHELLO_SHOOT_INTERVAL)
             wc.shoot_at = now + interval
             if wc.state == "AERIAL":
-                # воздушная атака: стреляет по ВСЕМ живым игрокам сразу
+                # потолочная атака: по всем живым игрокам + 4 случайных направления
                 for pl in self.players.values():
                     if not pl.dead:
                         self._wormchello_fire(wc, pl.pos, now)
+                for angle_deg in [0, 90, 180, 270]:
+                    ang = math.radians(angle_deg + random.uniform(-20, 20))
+                    rx = wc.pos[0] + math.cos(ang) * 18.0
+                    ry = wc.pos[1] + math.sin(ang) * 18.0
+                    self._wormchello_fire(wc, [rx, ry, 0.0], now)
             else:
                 target = _nearest_player(self.players, wc.pos, 9999)
                 if target:
                     self._wormchello_fire(wc, target.pos, now)
+        # стрельба сфер ЛИНА
+        self._update_lina_shooting(now)
         # спавн прихвостней
         if now >= wc.spawn_minion_at:
             wc.spawn_minion_at = now + C.WORMCHELLO_MINION_INTERVAL
@@ -1681,21 +1707,30 @@ class World:
         self.events.append({"t": "event", "kind": "wormchello_shoot",
                             "pos": [round(wc.pos[0], 2), round(wc.pos[1], 2), round(wc.pos[2], 2)]})
 
+    def _update_lina_shooting(self, now):
+        """Периодические выстрелы сфер ЛИНА в ближайшего игрока."""
+        if not self.wormchello:
+            return
+        for ls in self.wormchello.lina_spheres:
+            if not ls.alive or now < ls.shoot_at:
+                continue
+            ls.shoot_at = now + C.LINA_SPHERE_SHOOT_INTERVAL
+            target = _nearest_player(self.players, ls.pos, 60.0)
+            if not target:
+                continue
+            wsid = self._next_worm_shot_id
+            self._next_worm_shot_id += 1
+            self.worm_shots[wsid] = WormShot(wsid, ls.pos, target.pos, now)
+            self.events.append({"t": "event", "kind": "wormchello_shoot",
+                                "pos": [round(ls.pos[0], 2), round(ls.pos[1], 2),
+                                        round(ls.pos[2], 2)]})
+
     def _wormchello_spawn_minions(self, now):
-        immune = now + 1.8
-        for _ in range(C.WORMCHELLO_MINION_ANTS):
-            ant = Ant(self._next_ant_id, self._far_spawn_point())
-            ant.spawn_immune_until = immune
-            self.ants[self._next_ant_id] = ant
-            self._next_ant_id += 1
-        for _ in range(C.WORMCHELLO_MINION_NEONS):
-            na = NeonAnt(self._next_neon_id, now)
-            na.spawn_immune_until = immune
-            na.pos = list(self._far_spawn_point()) + [0.0]
-            self.neon_ants[self._next_neon_id] = na
-            self._next_neon_id += 1
-        self.events.append({"t": "event", "kind": "wormchello_minions",
-                            "count": C.WORMCHELLO_MINION_ANTS + C.WORMCHELLO_MINION_NEONS})
+        # спавн по одному таракану за раз
+        ant = Ant(self._next_ant_id, self._far_spawn_point())
+        ant.spawn_immune_until = now + 1.5
+        self.ants[self._next_ant_id] = ant
+        self._next_ant_id += 1
 
     def _defeat_wormchello(self, owner_id, now):
         wc = self.wormchello

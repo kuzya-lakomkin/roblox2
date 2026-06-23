@@ -235,23 +235,37 @@ class RemoteAvatar:
         self.emote_np.hide()
 
         self._prev = None
+        self._vis = None      # [x, y, z, h] — интерполированная визуальная позиция
+        # параметры анимации, обновляемые по снапшоту и читаемые в lerp_step
+        self._anim_moving = False
+        self._anim_vz = 0.0
+        self._anim_on_ground = True
+        self._anim_emote = None
+        self._anim_dead = False
 
     def update(self, snap, dt):
         x, y, z = snap["pos"]
-        self.root.setPos(x, y, z)
-        self.root.setH(snap["h"])
+        h = snap["h"]
         dead = bool(snap.get("dead"))
-        # вывести параметры анимации из снапшота (скорость/высота)
+        if self._vis is None:
+            self._vis = [x, y, z, h]
+        self._tgt = (x, y, z, h)
+        # вычислить параметры движения из дельты снапшотов
         moving, vz, on_ground = False, 0.0, True
         if self._prev is not None and dt > 0:
             dx, dy, dz = x - self._prev[0], y - self._prev[1], z - self._prev[2]
-            moving = (dx * dx + dy * dy) > (0.03 * 0.03)
+            moving = (dx * dx + dy * dy) > (0.02 * 0.02)
             vz = dz / dt
             on_ground = z <= 0.06 and abs(vz) < 1.0
         self._prev = (x, y, z)
         emote = snap.get("emote")
-        self.model.update(dt, moving=moving, on_ground=on_ground, vz=vz,
-                          emote=emote, dead=dead)
+        # сохраняем — model.update вызывается в lerp_step каждый кадр
+        self._anim_moving = moving
+        self._anim_vz = vz
+        self._anim_on_ground = on_ground
+        self._anim_emote = emote
+        self._anim_dead = dead
+        # эмоция и иммунитет — обновляются по снапшоту (не требуют 60fps)
         if dead or not emote:
             self.emote_np.hide()
         else:
@@ -265,6 +279,30 @@ class RemoteAvatar:
         else:
             self.root.clearTransparency()
             self.root.setAlphaScale(1.0)
+
+    def lerp_step(self, dt, speed=15.0):
+        """Вызывать каждый кадр: плавное движение + анимация на полном FPS."""
+        if self._vis is None or not hasattr(self, "_tgt"):
+            return
+        a = min(1.0, speed * dt)
+        tx, ty, tz, th = self._tgt
+        v = self._vis
+        v[0] += (tx - v[0]) * a
+        v[1] += (ty - v[1]) * a
+        v[2] += (tz - v[2]) * a
+        dh = th - v[3]
+        while dh > 180: dh -= 360
+        while dh < -180: dh += 360
+        v[3] += dh * a
+        self.root.setPos(v[0], v[1], v[2])
+        self.root.setH(v[3])
+        # анимация сегментов тела на полном FPS (не 30 Гц)
+        self.model.update(dt,
+                          moving=self._anim_moving,
+                          on_ground=self._anim_on_ground,
+                          vz=self._anim_vz,
+                          emote=self._anim_emote,
+                          dead=self._anim_dead)
 
     def destroy(self):
         self.root.removeNode()
@@ -563,9 +601,13 @@ class Roblox2(ShowBase):
 
         self.remote = {}
         self.ant_nodes = {}
+        self._ant_target = {}        # aid -> [x, y, z]  — цель из снапшота
+        self._ant_vis = {}           # aid -> [x, y, z]  — текущая визуальная позиция
         self._ant_prev = {}
         self._ant_immune_prev = {}   # aid -> bool, кэш alpha-состояния
         self.neon_ant_nodes = {}     # nid -> NodePath (синие стрелки)
+        self._neon_target = {}       # nid -> [x, y, z, h]
+        self._neon_vis = {}          # nid -> [x, y, z, h]
         self._neon_hp_bars = {}      # nid -> WorldBar
         self._neon_immune_prev = {}  # nid -> bool
         self.ant_shot_nodes = {}     # asid -> NodePath (шкибиди-зелье)
@@ -603,10 +645,21 @@ class Roblox2(ShowBase):
         self._wc_h_interp = 0.0                   # интерполяция heading
         self._wc_night_alpha = 0.0
         self._wc_lina_pulse_t = 0.0  # таймер пульса сфер
+        self._wc_cutscene_t = -1.0   # таймер кат-сцены (<0 = неактивна)
+        self._wc_cs_lina_shown = False
+        self._wc_cs_holes_shown = False
+        self._wc_cs_announced = False
+        self._wc_aerial_t = 0.0      # время в AERIAL (для анимации роста)
         self.bk_boss_node = None
         self._bk_is_model = False
         self.bk_boss_bar = None
         self.bk_minion_nodes = {}   # mid -> NodePath
+        self._bkm_target = {}       # mid -> [x, y, z]
+        self._bkm_vis = {}          # mid -> [x, y, z]
+        # визуальные позиции боссов (для плавного lerp между снапшотами)
+        self._boss_vis = None        # [x, y, z, h] или None
+        self._boss2_vis = None       # [x, y, z, h] или None
+        self._bk_boss_vis = None     # [x, y, z, h] или None
         self.bk_boss_info = None
         self._bk_hit_cd = 0.0
         self._prev_bk_hp = C.BLACK_KING_HP
@@ -2197,6 +2250,8 @@ class Roblox2(ShowBase):
                             life=0.9, grav=-8.0, spread=1.0, up=0.6)
         self._process_network(dt)      # снапшоты приходят и применяются всегда
         self._update_remotes(dt)
+        if self.world_built:
+            self._interpolate_entities(dt)  # плавное движение каждый кадр
         if controllable:
             self._send_state(dt)
         self._update_hud()
@@ -2830,11 +2885,14 @@ class Roblox2(ShowBase):
                 node = self._make_bk_minion_node()
                 node.reparentTo(self.render)
                 self.bk_minion_nodes[mid] = node
-            node.setPos(mx, my, mz)
+                self._bkm_vis[mid] = [mx, my, mz]
+            self._bkm_target[mid] = [mx, my, mz]
         for mid in list(self.bk_minion_nodes):
             if mid not in seen_bkm:
                 self.bk_minion_nodes[mid].removeNode()
                 del self.bk_minion_nodes[mid]
+                self._bkm_target.pop(mid, None)
+                self._bkm_vis.pop(mid, None)
 
         # фиолетовые лазеры BLACK KING (фаза 2)
         flying_mode = self.bk_boss_info.get("flying", False) if self.bk_boss_info else False
@@ -2917,12 +2975,10 @@ class Roblox2(ShowBase):
                 node = make_cockroach(scale=1.1)
                 node.reparentTo(self.render)
                 self.ant_nodes[aid] = node
-            node.setPos(ax, ay, az)
-            px, py = self._ant_prev.get(aid, (ax, ay))
-            dx, dy = ax - px, ay - py
-            if dx * dx + dy * dy > 1e-5:
-                node.setH(math.degrees(math.atan2(-dx, dy)))
-            self._ant_prev[aid] = (ax, ay)
+                # мгновенный снап при спавне
+                self._ant_vis[aid] = [ax, ay, az]
+            # обновить цель — фактический setPos происходит в _interpolate_entities
+            self._ant_target[aid] = [ax, ay, az]
             _ai = bool(ant_immune)
             if self._ant_immune_prev.get(aid) != _ai:
                 self._ant_immune_prev[aid] = _ai
@@ -2936,6 +2992,8 @@ class Roblox2(ShowBase):
             if aid not in seen_ants:
                 self.ant_nodes[aid].removeNode()
                 del self.ant_nodes[aid]
+                self._ant_target.pop(aid, None)
+                self._ant_vis.pop(aid, None)
                 self._ant_prev.pop(aid, None)
                 self._ant_immune_prev.pop(aid, None)
 
@@ -2955,11 +3013,15 @@ class Roblox2(ShowBase):
                                fill_color=(0.2, 0.6, 1.0, 1),
                                font=self.fonts.get("world"))
                 self._neon_hp_bars[nid] = bar
-            node.setPos(nx, ny, 0.0)
-            node.setH(nh)
+                # мгновенный снап при спавне
+                self._neon_vis[nid] = [nx, ny, 0.0, nh]
+            # цель для интерполяции (setPos/setH — в _interpolate_entities каждый кадр)
+            self._neon_target[nid] = [nx, ny, 0.0, nh]
+            # HP-бар обновляем по снапшоту (без интерполяции — он не движется)
             if nid in self._neon_hp_bars:
                 bar = self._neon_hp_bars[nid]
-                bar.set_pos(nx, ny, 2.4)
+                vis = self._neon_vis.get(nid, [nx, ny, 0.0, nh])
+                bar.set_pos(vis[0], vis[1], 2.4)
                 bar.set_fraction(hp / C.NEON_ANT_HP)
             _ni = bool(neon_immune)
             if self._neon_immune_prev.get(nid) != _ni:
@@ -2974,6 +3036,8 @@ class Roblox2(ShowBase):
             if nid not in seen_neon:
                 self.neon_ant_nodes[nid].removeNode()
                 del self.neon_ant_nodes[nid]
+                self._neon_target.pop(nid, None)
+                self._neon_vis.pop(nid, None)
                 self._neon_immune_prev.pop(nid, None)
                 if nid in self._neon_hp_bars:
                     self._neon_hp_bars[nid].destroy()
@@ -3140,23 +3204,19 @@ class Roblox2(ShowBase):
             if self.boss_node is None:
                 self.boss_node = self._make_boss_node()
                 self.boss_node.reparentTo(self.render)
-                # шкалу крепим к сцене (не к боссу ×3) - отдельный размер
                 self.boss_bar = WorldBar(self.render, label="ПАПАНЯ", width=3.4,
                                          height=0.44, fill_color=(1.0, 0.85, 0.2, 1),
                                          font=self.fonts.get("world"))
-            bx, by, bz = self.boss_info["pos"]
-            self.boss_node.setPos(bx, by, bz)
-            self.boss_bar.set_pos(bx, by, bz + 5.5)
-            # разворот к ближайшему игроку (heading считает сервер) + доворот модели
-            h = self.boss_info.get("h", 0.0)
-            if self._boss_is_model:
-                h += AC.BOSS_MODEL_YAW
-            self.boss_node.setH(h)
+                bx0, by0, bz0 = self.boss_info["pos"]
+                h0 = self.boss_info.get("h", 0.0)
+                if self._boss_is_model: h0 += AC.BOSS_MODEL_YAW
+                self._boss_vis = [bx0, by0, bz0, h0]
+            # только данные HUD — позиция/ориентация lerp'ится в _interpolate_entities
             r, mx = self.boss_info["respect"], self.boss_info["max"]
             self.boss_bar.set_fraction(r / mx if mx else 0.0)
             ph = self.boss_info.get("phase", 1)
             self.boss_bar.set_label(f"ПАПАНЯ ({ph} фаза) - {r}/{mx}")
-            # во 2-й фазе из босса постоянно валит едкий зелёный ГАЗ
+            bx, by, bz = (self._boss_vis or self.boss_info["pos"])[:3]
             if ph == 2:
                 self.particles.burst([bx, by, bz + 1.0], count=2,
                                      color=(0.5, 0.92, 0.32, 1), speed=2.2,
@@ -3171,6 +3231,7 @@ class Roblox2(ShowBase):
             if self.boss_bar is not None:
                 self.boss_bar.destroy()
                 self.boss_bar = None
+            self._boss_vis = None
             self._prev_boss_respect = 0
 
         # второй Папаня (только на волне 9)
@@ -3184,19 +3245,17 @@ class Roblox2(ShowBase):
                 self.boss2_bar = WorldBar(self.render, label="ПАПАНЯ", width=3.4,
                                           height=0.44, fill_color=(1.0, 0.85, 0.2, 1),
                                           font=self.fonts.get("world"))
-            bx, by, bz = self.boss2_info["pos"]
-            self.boss2_node.setPos(bx, by, bz)
-            self.boss2_bar.set_pos(bx, by, bz + 5.5)
-            h = self.boss2_info.get("h", 0.0)
-            if self._boss2_is_model:
-                h += AC.BOSS_MODEL_YAW
-            self.boss2_node.setH(h)
+                bx0, by0, bz0 = self.boss2_info["pos"]
+                h0 = self.boss2_info.get("h", 0.0)
+                if self._boss2_is_model: h0 += AC.BOSS_MODEL_YAW
+                self._boss2_vis = [bx0, by0, bz0, h0]
             r, mx = self.boss2_info["respect"], self.boss2_info["max"]
             self.boss2_bar.set_fraction(r / mx if mx else 0.0)
             ph = self.boss2_info.get("phase", 1)
             self.boss2_bar.set_label(f"ПАПАНЯ 2 ({ph} фаза) - {r}/{mx}")
+            bx2, by2, bz2 = (self._boss2_vis or self.boss2_info["pos"])[:3]
             if ph == 2:
-                self.particles.burst([bx, by, bz + 1.0], count=2,
+                self.particles.burst([bx2, by2, bz2 + 1.0], count=2,
                                      color=(0.5, 0.92, 0.32, 1), speed=2.2,
                                      size=0.5, life=1.6, grav=-0.6, spread=1.0, up=0.7)
         elif self.boss2_node is not None:
@@ -3205,6 +3264,7 @@ class Roblox2(ShowBase):
             if self.boss2_bar is not None:
                 self.boss2_bar.destroy()
                 self.boss2_bar = None
+            self._boss2_vis = None
 
         # улыбающиеся тараканы — обновляем ноды по снапшоту
         self._update_smile_roaches()
@@ -3319,6 +3379,8 @@ class Roblox2(ShowBase):
         self._wc_lina_bars = []
         self._wc_pos_interp = [0.0, 0.0, -4.0]
         self._wc_h_interp = 0.0
+        self._wc_aerial_t = 0.0
+        self._wc_cutscene_t = -1.0
 
     def _update_wormchello_rendering(self):
         import math as _m
@@ -3357,45 +3419,60 @@ class Roblox2(ShowBase):
         ipx, ipy, ipz = self._wc_pos_interp
 
         # --- ГОЛОВА ---
-        if visible:
+        dt_now = getattr(self, "_last_dt", 0.033)
+        if state == "AERIAL":
+            # Голова растёт на потолке с 0 до огромного размера
+            self._wc_aerial_t += dt_now
+            max_scale = 6.0
+            grow_t = min(1.0, self._wc_aerial_t / 1.5)
+            cur_scale = max_scale * grow_t * grow_t
             self._wc_head_node.show()
             self._wc_head_node.setPos(ipx, ipy, ipz)
             self._wc_head_node.setH(self._wc_h_interp)
-            # фаза 2 AERIAL: голова крупнее
-            if state == "AERIAL" and ph == 2:
-                self._wc_head_node.setScale(1.7)
-            else:
-                self._wc_head_node.setScale(1.0)
+            self._wc_head_node.setScale(max(0.05, cur_scale))
+        elif visible:
+            self._wc_aerial_t = 0.0
+            self._wc_head_node.show()
+            self._wc_head_node.setPos(ipx, ipy, ipz)
+            self._wc_head_node.setH(self._wc_h_interp)
+            self._wc_head_node.setScale(1.0)
         else:
+            self._wc_aerial_t = 0.0
             self._wc_head_node.hide()
 
         # --- ТЕЛО ---
         if state == "SLITHERING":
-            # ползание — сегменты по трейлу
+            # ползание: первый сегмент начинается ЧЕРЕЗ 5 точек после головы,
+            # чтобы голова и первый сег визуально разделились
             for i, seg_np in enumerate(self._wc_seg_nodes):
-                tidx = (i + 1) * 2
+                tidx = 5 + i * 3
                 if tidx < len(trail):
                     tx, ty, tz = trail[tidx]
                     seg_np.show()
                     seg_np.setPos(tx, ty, tz)
-                    seg_np.setScale(1.0)
-                    if tidx + 2 < len(trail):
-                        nx_pt, ny_pt = trail[tidx + 2][0], trail[tidx + 2][1]
+                    seg_np.setScale(max(0.55, 1.1 - i * 0.07))
+                    # поворот к следующей точке трейла
+                    nidx = tidx + 3
+                    if nidx < len(trail):
+                        nx_pt, ny_pt = trail[nidx][0], trail[nidx][1]
                         dx_s = tx - nx_pt; dy_s = ty - ny_pt
                         if _m.hypot(dx_s, dy_s) > 0.01:
                             seg_np.setH(_m.degrees(_m.atan2(-dx_s, dy_s)))
                 else:
                     seg_np.hide()
+        elif state == "AERIAL":
+            # в воздушной фазе тело не рисуем (голова на потолке)
+            for seg_np in self._wc_seg_nodes:
+                seg_np.hide()
         elif visible:
-            # PEEKING / AERIAL / DESCENDING — тело висит вертикально ниже головы
+            # PEEKING / DESCENDING — тело висит вертикально ниже головы
             n_show = min(len(self._wc_seg_nodes), 6)
-            head_scale = 1.7 if (state == "AERIAL" and ph == 2) else 1.0
             for i, seg_np in enumerate(self._wc_seg_nodes):
                 if i >= n_show:
                     seg_np.hide()
                     continue
                 seg_z = ipz - (i + 1) * 1.6
-                r_scale = max(0.4, 1.0 - i * 0.07) * head_scale
+                r_scale = max(0.4, 1.0 - i * 0.07)
                 seg_np.show()
                 seg_np.setPos(ipx, ipy, seg_z)
                 seg_np.setScale(r_scale)
@@ -3472,9 +3549,10 @@ class Roblox2(ShowBase):
                 del self.worm_shot_nodes[wsid]
 
     def _update_wc_filter(self, dt):
-        """Плавная анимация фиолетового фильтра ЧЕРВЯЧЕЛЛО."""
+        """Фиолетовый фильтр + поэтапная кат-сцена ЧЕРВЯЧЕЛЛО (таймер)."""
         if not hasattr(self, "_wc_night_overlay"):
             return
+        # фиолетовый фильтр
         target = 0.35 if self.wormchello_info else 0.0
         self._wc_night_alpha += (target - self._wc_night_alpha) * min(1.0, 2.5 * dt)
         if self._wc_night_alpha > 0.005:
@@ -3482,36 +3560,15 @@ class Roblox2(ShowBase):
             self._wc_night_overlay.show()
         else:
             self._wc_night_overlay.hide()
-
-    def _wormchello_cutscene(self, msg):
-        """Кат-сцена появления ЧЕРВЯЧЕЛЛО: поэтапное появление — сферы → норы → босс."""
-        import random as _r
-        from common.config import WORMCHELLO_HOLES, LINA_SPHERE_POSITIONS
-
-        # телепорт игрока в центральную арену
-        if self.state == "COMBAT":
-            self.pos.set(_r.uniform(-4, 4), _r.uniform(-4, 4), 0.1)
-
-        # инициализировать ноды если ещё нет
-        if self._wc_head_node is None:
-            self._init_wormchello_nodes()
-
-        # скрыть дыры и сферы — будут показаны поэтапно
-        for n in self._wc_hole_nodes:
-            n.hide()
-        for n in self._wc_lina_nodes:
-            n.hide()
-
-        self._prev_wc_hp = 2000
-
-        # --- шаг 0: вспышка + звук + музыка ---
-        self._flash_screen((0.0, 0.0, 0.0, 1), 0.9)
-        self._shake(0.6)
-        self._play_oneshot(AC.SFX_WORMCHELLO_SPAWN)
-        self._play_music(AC.MUSIC_WORMCHELLO)
-
-        # --- шаг 1 (t=1.2s): появление сфер ЛИНА ---
-        def _show_lina(task):
+        # кат-сцена
+        if self._wc_cutscene_t < 0:
+            return
+        self._wc_cutscene_t += dt
+        t = self._wc_cutscene_t
+        from common.config import LINA_SPHERE_POSITIONS, WORMCHELLO_HOLES
+        # t=1.2 — появление сфер ЛИНА
+        if t >= 1.2 and not self._wc_cs_lina_shown:
+            self._wc_cs_lina_shown = True
             self._show_notice("Уничтожь сферы ЛИНА!", color=(0.3, 0.85, 1.0, 1), duration=5.0)
             for i, n in enumerate(self._wc_lina_nodes):
                 n.show()
@@ -3520,11 +3577,9 @@ class Roblox2(ShowBase):
                                      color=(0.3, 0.75, 1.0, 1), speed=5.0,
                                      size=0.35, life=1.1, grav=-5.0, spread=1.4, up=1.0)
             self._shake(0.4)
-            return task.done
-        self.taskMgr.doMethodLater(1.2, _show_lina, "wc_lina_appear")
-
-        # --- шаг 2 (t=2.8s): провалы в полу ---
-        def _show_holes(task):
+        # t=2.8 — дыры в полу
+        if t >= 2.8 and not self._wc_cs_holes_shown:
+            self._wc_cs_holes_shown = True
             for n in self._wc_hole_nodes:
                 n.show()
             for (hx, hy) in WORMCHELLO_HOLES:
@@ -3532,14 +3587,47 @@ class Roblox2(ShowBase):
                                      color=(0.38, 0.28, 0.12, 1), speed=5.0,
                                      size=0.3, life=1.0, grav=-6.0, spread=1.2, up=1.2)
             self._shake(0.7)
-            return task.done
-        self.taskMgr.doMethodLater(2.8, _show_holes, "wc_holes_appear")
-
-        # --- шаг 3 (t=4.0s): анонс босса ---
-        def _announce(task):
+        # t=4.2 — анонс босса
+        if t >= 4.2 and not self._wc_cs_announced:
+            self._wc_cs_announced = True
             self._show_notice("ЧЕРВЯЧЕЛЛО КРЫТОЧЕЛЛО!", color=(0.95, 0.45, 0.1, 1), duration=4.5)
-            return task.done
-        self.taskMgr.doMethodLater(4.0, _announce, "wc_announce")
+        # кат-сцена заканчивается через 8с
+        if t >= 8.0:
+            self._wc_cutscene_t = -1.0
+
+    def _wormchello_cutscene(self, msg):
+        """Кат-сцена появления ЧЕРВЯЧЕЛЛО — таймерная (надёжная без doMethodLater)."""
+        import random as _r
+
+        # телепорт игрока в центр
+        if self.state == "COMBAT":
+            self.pos.set(_r.uniform(-4, 4), _r.uniform(-4, 4), 0.1)
+
+        # инициализировать ноды если ещё нет
+        if self._wc_head_node is None:
+            self._init_wormchello_nodes()
+
+        # скрыть — будут показаны поэтапно через таймер в _update_wc_filter
+        for n in self._wc_hole_nodes:
+            n.hide()
+        for n in self._wc_lina_nodes:
+            n.hide()
+
+        self._prev_wc_hp = 2000
+
+        # сброс флагов
+        self._wc_cs_lina_shown = False
+        self._wc_cs_holes_shown = False
+        self._wc_cs_announced = False
+
+        # шаг 0: немедленно — вспышка, тряска, звук, музыка
+        self._flash_screen((0.0, 0.0, 0.0, 1), 0.9)
+        self._shake(0.6)
+        self._play_oneshot(AC.SFX_WORMCHELLO_SPAWN)
+        self._play_music(AC.MUSIC_WORMCHELLO)
+
+        # запуск таймера (остальные этапы в _update_wc_filter)
+        self._wc_cutscene_t = 0.0
 
     def _update_cup_spots(self, spots):
         """Показать поставленные белые стаканы на 4 угловых пьедесталах."""
@@ -3602,7 +3690,7 @@ class Roblox2(ShowBase):
         return make_boss(scale=3.0)   # fallback: процедурная модель
 
     def _update_bk_rendering(self):
-        """Рендер BLACK KING из снапшота: модель + HP-шкала."""
+        """Рендер BLACK KING из снапшота: создание/удаление узла + HUD. Позиция lerp'ится."""
         if self.bk_boss_info:
             if self.bk_boss_node is None:
                 self.bk_boss_node = self._make_bk_boss_node()
@@ -3610,17 +3698,15 @@ class Roblox2(ShowBase):
                 self.bk_boss_bar = WorldBar(self.render, label="BLACK KING", width=3.8,
                                              height=0.44, fill_color=(0.6, 0.0, 1.0, 1),
                                              font=self.fonts.get("world"))
-            bx, by, bz = self.bk_boss_info["pos"]
-            self.bk_boss_node.setPos(bx, by, bz)
-            h = self.bk_boss_info.get("h", 0.0)
-            if self._bk_is_model:
-                h += AC.BLACK_KING_MODEL_YAW
-            self.bk_boss_node.setH(h)
+                bx0, by0, bz0 = self.bk_boss_info["pos"]
+                h0 = self.bk_boss_info.get("h", 0.0)
+                if self._bk_is_model: h0 += AC.BLACK_KING_MODEL_YAW
+                self._bk_boss_vis = [bx0, by0, bz0, h0]
             hp, mx = self.bk_boss_info["hp"], self.bk_boss_info["max_hp"]
+            bx, by, bz = (self._bk_boss_vis or self.bk_boss_info["pos"])[:3]
             self.bk_boss_bar.set_pos(bx, by, bz + 6.0)
             self.bk_boss_bar.set_fraction(hp / mx if mx else 0.0)
             self.bk_boss_bar.set_label(f"BLACK KING - {hp}/{mx}")
-            # фиолетовые частицы свечения
             self.particles.burst([bx, by, bz + 1.5], count=2,
                                  color=(0.55, 0.0, 1.0, 1), speed=2.5,
                                  size=0.5, life=1.4, grav=-0.4, spread=1.0, up=0.8)
@@ -3630,6 +3716,7 @@ class Roblox2(ShowBase):
             if self.bk_boss_bar is not None:
                 self.bk_boss_bar.destroy()
                 self.bk_boss_bar = None
+            self._bk_boss_vis = None
             self._prev_bk_hp = C.BLACK_KING_HP
 
     def _make_bk_boss_node(self, target_height=6.0):
@@ -3785,7 +3872,98 @@ class Roblox2(ShowBase):
         self._bk_wipe_sinking = alive
 
     def _update_remotes(self, dt):
-        pass  # обновляются в _apply_snapshot
+        for av in self.remote.values():
+            av.lerp_step(dt)
+
+    def _interpolate_entities(self, dt):
+        """Плавное движение сущностей между снапшотами (каждый кадр, не 30 Гц)."""
+        a = min(1.0, 15.0 * dt)   # ~67мс до полного совпадения при 60fps
+        a_boss = min(1.0, 10.0 * dt)  # боссы медленнее — чуть более плавно
+
+        def _lerp3(v, t, alpha):
+            v[0] += (t[0] - v[0]) * alpha
+            v[1] += (t[1] - v[1]) * alpha
+            v[2] += (t[2] - v[2]) * alpha
+
+        def _lerp_h(cur_h, tgt_h, alpha):
+            dh = tgt_h - cur_h
+            while dh > 180: dh -= 360
+            while dh < -180: dh += 360
+            return cur_h + dh * alpha
+
+        # --- Тараканы ---
+        for aid, node in self.ant_nodes.items():
+            t = self._ant_target.get(aid)
+            v = self._ant_vis.get(aid)
+            if t is None or v is None:
+                continue
+            ox, oy = v[0], v[1]
+            _lerp3(v, t, a)
+            node.setPos(v[0], v[1], v[2])
+            dx, dy = v[0] - ox, v[1] - oy
+            if dx * dx + dy * dy > 1e-6:
+                node.setH(math.degrees(math.atan2(-dx, dy)))
+
+        # --- Нео-муравьи ---
+        for nid, node in self.neon_ant_nodes.items():
+            t = self._neon_target.get(nid)
+            v = self._neon_vis.get(nid)
+            if t is None or v is None:
+                continue
+            _lerp3(v, t, a)
+            v[3] = _lerp_h(v[3], t[3], a)
+            node.setPos(v[0], v[1], v[2])
+            node.setH(v[3])
+            # HP-бар следует за визуальной позицией
+            bar = self._neon_hp_bars.get(nid)
+            if bar:
+                bar.set_pos(v[0], v[1], 2.4)
+
+        # --- BK-миньоны ---
+        for mid, node in self.bk_minion_nodes.items():
+            t = self._bkm_target.get(mid)
+            v = self._bkm_vis.get(mid)
+            if t is None or v is None:
+                continue
+            _lerp3(v, t, a)
+            node.setPos(v[0], v[1], v[2])
+
+        # --- Папаня (босс) ---
+        if self.boss_info and self.boss_node and self._boss_vis:
+            tx, ty, tz = self.boss_info["pos"]
+            th = self.boss_info.get("h", 0.0)
+            if self._boss_is_model: th += AC.BOSS_MODEL_YAW
+            v = self._boss_vis
+            _lerp3(v, [tx, ty, tz], a_boss)
+            v[3] = _lerp_h(v[3], th, a_boss)
+            self.boss_node.setPos(v[0], v[1], v[2])
+            self.boss_node.setH(v[3])
+            self.boss_bar.set_pos(v[0], v[1], v[2] + 5.5)
+
+        # --- Папаня 2 ---
+        if self.boss2_info and self.boss2_node and self._boss2_vis:
+            tx, ty, tz = self.boss2_info["pos"]
+            th = self.boss2_info.get("h", 0.0)
+            if self._boss2_is_model: th += AC.BOSS_MODEL_YAW
+            v = self._boss2_vis
+            _lerp3(v, [tx, ty, tz], a_boss)
+            v[3] = _lerp_h(v[3], th, a_boss)
+            self.boss2_node.setPos(v[0], v[1], v[2])
+            self.boss2_node.setH(v[3])
+            self.boss2_bar.set_pos(v[0], v[1], v[2] + 5.5)
+
+        # --- BLACK KING ---
+        if self.bk_boss_info and self.bk_boss_node and self._bk_boss_vis:
+            tx, ty, tz = self.bk_boss_info["pos"]
+            th = self.bk_boss_info.get("h", 0.0)
+            if self._bk_is_model: th += AC.BLACK_KING_MODEL_YAW
+            v = self._bk_boss_vis
+            _lerp3(v, [tx, ty, tz], a_boss)
+            v[3] = _lerp_h(v[3], th, a_boss)
+            self.bk_boss_node.setPos(v[0], v[1], v[2])
+            self.bk_boss_node.setH(v[3])
+            if self.bk_boss_bar:
+                self.bk_boss_bar.set_pos(v[0], v[1], v[2] + 6.0)
 
     def _update_bk_cutscene(self, dt):
         """Кат-сцена призыва BLACK KING (12 секунд): тёмно-фиолетовый фильтр,

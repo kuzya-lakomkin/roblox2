@@ -393,31 +393,6 @@ def make_wormchello_head(face_texture=None):
         strand.setHpr(rz, rx, 0)
         strand.setLightOff(1)  # full-bright чтобы волосы были видны
 
-    # белки глаз (два крупных шара по бокам переда)
-    white = (0.96, 0.94, 0.90, 1)
-    iris  = (0.12, 0.24, 0.60, 1)
-    pupil = (0.04, 0.04, 0.04, 1)
-    for sx in (-1, 1):
-        eye_x = sx * 0.62
-        eye_y = head_r * 0.78
-        eye_z = 0.20
-        # белок
-        e_white = make_sphere(1.0, 6, 10, white)
-        e_white.reparentTo(root)
-        e_white.setScale(0.32, 0.22, 0.32)
-        e_white.setPos(eye_x, eye_y, eye_z)
-        # радужка
-        e_iris = make_sphere(1.0, 5, 8, iris)
-        e_iris.reparentTo(root)
-        e_iris.setScale(0.20, 0.12, 0.20)
-        e_iris.setPos(eye_x, eye_y + 0.14, eye_z)
-        # зрачок (тёмный) — full-bright
-        e_pupil = make_sphere(1.0, 4, 6, pupil)
-        e_pupil.reparentTo(root)
-        e_pupil.setScale(0.10, 0.08, 0.10)
-        e_pupil.setPos(eye_x, eye_y + 0.20, eye_z)
-        e_pupil.setLightOff(1)
-
     return root
 
 

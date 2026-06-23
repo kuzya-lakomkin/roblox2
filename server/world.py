@@ -582,11 +582,12 @@ class LinaSphere:
 
 
 class WormShot:
-    """Снаряд-биомасса ЧЕРВЯЧЕЛЛО — летит в игрока по дуге."""
-    __slots__ = ("wsid", "pos", "vel", "die_at")
+    """Снаряд ЧЕРВЯЧЕЛЛО/ЛИНА. kind=0 — биомасса червя, kind=1 — синий снаряд ЛИНА."""
+    __slots__ = ("wsid", "pos", "vel", "die_at", "kind")
 
-    def __init__(self, wsid, origin, target_pos, now):
+    def __init__(self, wsid, origin, target_pos, now, kind=0):
         self.wsid = wsid
+        self.kind = kind
         self.pos = [float(origin[0]), float(origin[1]), float(origin[2])]
         tx = float(target_pos[0]); ty = float(target_pos[1])
         tz = float(target_pos[2]) + C.PLAYER_HEIGHT * 0.5
@@ -603,7 +604,8 @@ class WormShot:
         self.vel[2] += C.GRAVITY * dt * 0.06   # лёгкая дуга вниз
 
     def snapshot(self):
-        return [self.wsid, round(self.pos[0], 2), round(self.pos[1], 2), round(self.pos[2], 2)]
+        return [self.wsid, round(self.pos[0], 2), round(self.pos[1], 2),
+                round(self.pos[2], 2), self.kind]
 
 
 class WormChello:
@@ -1726,10 +1728,12 @@ class World:
                     self._wormchello_fire(wc, target.pos, now)
         # стрельба сфер ЛИНА
         self._update_lina_shooting(now)
-        # спавн прихвостней
+        # спавн прихвостней — только если все сферы ЛИНА уничтожены
+        lina_alive = any(s.alive for s in wc.lina_spheres)
         if now >= wc.spawn_minion_at:
             wc.spawn_minion_at = now + C.WORMCHELLO_MINION_INTERVAL
-            self._wormchello_spawn_minions(now)
+            if not lina_alive:
+                self._wormchello_spawn_minions(now)
 
     def _wormchello_fire(self, wc, target_pos, now):
         wsid = self._next_worm_shot_id
@@ -1751,7 +1755,7 @@ class World:
                 continue
             wsid = self._next_worm_shot_id
             self._next_worm_shot_id += 1
-            self.worm_shots[wsid] = WormShot(wsid, ls.pos, target.pos, now)
+            self.worm_shots[wsid] = WormShot(wsid, ls.pos, target.pos, now, kind=1)
             self.events.append({"t": "event", "kind": "wormchello_shoot",
                                 "pos": [round(ls.pos[0], 2), round(ls.pos[1], 2),
                                         round(ls.pos[2], 2)]})

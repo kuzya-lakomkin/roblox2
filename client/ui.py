@@ -435,20 +435,21 @@ class MainMenu(Screen):
             frameColor=(0.10, 0.09, 0.05, 0.85), text_fg=TEXT, **nick_kw,
         )
 
-        # выбор цвета игрока (8 свотчей в ряд, сдвинуты правее)
-        self._label("Цвет:", (0.0, 0, 0.175), scale=0.038, color=ACCENT)
+        # выбор цвета игрока: лейбл сверху, ряд свотчей снизу
+        self._label("Цвет персонажа:", (0.0, 0, 0.215), scale=0.038, color=ACCENT)
         self._color_btns = []
         sw = 0.056   # ширина свотча
         gap = 0.010
         n_colors = len(_COLOR_PRESETS)
         total_w = n_colors * sw + (n_colors - 1) * gap
         row_start = -total_w / 2 + sw / 2  # центрировано относительно 0
+        BTN_Y = 0.163   # свотчи ниже лейбла, не перекрывают его
         for i, col in enumerate(_COLOR_PRESETS):
             cx = row_start + i * (sw + gap)
             btn = DirectButton(
                 parent=self.root,
                 frameSize=(-sw/2, sw/2, -sw/2, sw/2),
-                pos=(cx, 0, 0.175),
+                pos=(cx, 0, BTN_Y),
                 frameColor=col + (1,),
                 relief=DGG.FLAT,
                 command=self._pick_color,

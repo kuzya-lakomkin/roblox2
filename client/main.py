@@ -3678,13 +3678,23 @@ class Roblox2(ShowBase):
     def _update_worm_shots(self):
         seen = set()
         for ws_data in getattr(self, "_last_wshots", []):
-            wsid, wx, wy, wz = ws_data
+            # формат: [wsid, x, y, z] или [wsid, x, y, z, kind]
+            wsid, wx, wy, wz = ws_data[0], ws_data[1], ws_data[2], ws_data[3]
+            wkind = ws_data[4] if len(ws_data) > 4 else 0
             seen.add(wsid)
             node = self.worm_shot_nodes.get(wsid)
             if node is None:
-                from client.primitives import make_box
-                node = make_box(0.35, 0.35, 0.35, (0.88, 0.55, 0.25, 1))
-                node.setLightOff(1)
+                from client.procgen import make_sphere as _ms
+                if wkind == 1:
+                    # снаряд ЛИНА — синий светящийся шар
+                    node = _ms(0.28, 8, 10, (0.25, 0.80, 1.0, 1))
+                    node.setLightOff(1)
+                    node.setColorScale(1.6, 1.6, 1.6, 1)
+                else:
+                    # снаряд ЧЕРВЯЧЕЛЛО — оранжевый кубик
+                    from client.primitives import make_box as _mb
+                    node = _mb(0.35, 0.35, 0.35, (0.88, 0.55, 0.25, 1))
+                    node.setLightOff(1)
                 node.reparentTo(self.render)
                 self.worm_shot_nodes[wsid] = node
             node.setPos(wx, wy, wz)

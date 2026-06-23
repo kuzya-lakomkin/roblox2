@@ -374,20 +374,22 @@ def make_wormchello_head(face_texture=None, hair_model=None):
         head_np.setTexOffset(ts, (0.25, 0.0))
 
     if hair_model is not None:
-        # glb-модель волос: нормализуем высоту под диаметр головы, крепим на макушку
+        # glb-модель волос: нормализуем по высоте (Z-extent), крепим основание на макушку
         hair = hair_model.copyTo(root)
         hair.clearTransform()
         try:
             mn, mx = hair.getTightBounds()
-            h_size = max((mx - mn).length(), 0.01)
-            target = head_r * 1.4   # волосы чуть крупнее головы
-            hair.setScale(target / h_size)
-            # сдвигаем вниз так, чтобы основание сидело на макушке
+            h_height = max(mx.z - mn.z, 0.01)
+            # целевая высота волос = диаметр головы, чтобы было хорошо видно
+            s = (head_r * 2.0) / h_height
+            hair.setScale(s)
+            # после масштабирования пересчитываем нижнюю границу
             mn2, _ = hair.getTightBounds()
+            # основание волос = верх головы-сферы (z = head_r)
             hair.setZ(head_r - mn2.z)
         except Exception:
-            hair.setScale(head_r * 0.9)
-            hair.setZ(head_r * 0.7)
+            hair.setScale(head_r * 1.2)
+            hair.setZ(head_r)
         hair.setLightOff(1)
     else:
         # процедурная причёска: ряд стренд-цилиндров на макушке с наклоном вперёд

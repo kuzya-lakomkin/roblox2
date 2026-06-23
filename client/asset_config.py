@@ -96,6 +96,10 @@ SFX_JOIN_PHASE1 = _s("sfx_join_phase1.wav")
 SFX_COCKROACH_DEATH = _s("sfx_cockroach_death.wav")   # убийство таракана
 SFX_COCKROACH_STEP = _s("sfx_cockroach_step.wav")     # ходьба тараканов (луп, пока живы)
 SFX_COCKROACH_LAUGH = _s("sfx_cockroach_laugh.wav")   # ржач над игроком во время ЩЕЛИ (луп)
+SFX_ANT_ATTACK = _s("sfx_ant_attack.wav")             # атака обычного таракана по игроку
+SFX_SMILE_ATTACK = _s("sfx_smile_attack.wav")         # атака зелёного таракана по игроку
+SFX_SMILE_STEP = _s("sfx_smile_step.wav")             # ходьба зелёных тараканов (луп)
+SFX_NEON_ANT_STEP = _s("sfx_neon_ant_step.wav")       # ходьба неоновых муравьёв (луп)
 
 # Червь-игрок
 SFX_WORM_STEP = _s("sfx_worm_step.wav")               # шаги червя (луп при движении)

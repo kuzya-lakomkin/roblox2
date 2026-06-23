@@ -53,7 +53,7 @@ class Player:
                  "dead", "respawn_at", "resources", "vel", "_last_pos",
                  "touch_inv_until", "lit_energy", "bee_until", "move_slow_until",
                  "cups", "user_id", "kills_session", "respawn_immune_until",
-                 "god_mode")
+                 "god_mode", "color")
 
     def __init__(self, pid, name):
         self.pid = pid
@@ -83,6 +83,10 @@ class Player:
         self.kills_session = 0         # убийств за сессию (отправляется в auth при выходе)
         self.respawn_immune_until = 0.0  # неуязвимость после возрождения
         self.god_mode = False          # бесконечное HP (только GODBLESSER)
+        # случайный яркий цвет по умолчанию; клиент может переслать свой
+        self.color = [round(random.uniform(0.35, 1.0), 2),
+                      round(random.uniform(0.35, 1.0), 2),
+                      round(random.uniform(0.35, 1.0), 2)]
 
     def snapshot(self):
         now = time.time()
@@ -96,6 +100,7 @@ class Player:
             "slow": round(max(0.0, self.move_slow_until - now), 2),
             "cups": self.cups,
             "rimm": round(max(0.0, self.respawn_immune_until - now), 2),
+            "color": self.color,
         }
 
 
@@ -508,8 +513,9 @@ class SmileRoach:
         self.pos = [float(spawn_pt[0]), float(spawn_pt[1]), 0.0]
         self.hp = C.SMILE_ROACH_HP
         self.h = 0.0
-        self.spray_at = time.time() + C.SMILE_ROACH_SPRAY_INTERVAL
-        self.spawn_immune_until = 0.0
+        now = time.time()
+        self.spray_at = now + C.SMILE_ROACH_SPRAY_INTERVAL
+        self.spawn_immune_until = now + C.SMILE_ROACH_SPAWN_IMMUNE
 
     def update(self, dt, now, players, frozen):
         if frozen:
@@ -1544,7 +1550,7 @@ class World:
                         continue
                     tc = [target.pos[0], target.pos[1], target.pos[2] + C.PLAYER_HEIGHT / 2]
                     if _dist2(shot.pos, tc) < (C.PROJECTILE_RADIUS + 0.7) ** 2:
-                        self._hurt(target, C.PROJECTILE_DAMAGE, now, shot.owner)
+                        self._hurt(target, C.PROJECTILE_DAMAGE, now, shot.owner, cause="player")
                         hit = True
                         break
             # снаряд врезался в стену -> разрушается (стрелять сквозь стены нельзя)
@@ -1647,7 +1653,7 @@ class World:
     def _smile_roach_spray(self, now):
         """Периодическое распыление аэрозоля вокруг улыбающихся тараканов."""
         for sr in self.smile_roaches.values():
-            if now < sr.spray_at:
+            if now < sr.spray_at or now < sr.spawn_immune_until:
                 continue
             sr.spray_at = now + C.SMILE_ROACH_SPRAY_INTERVAL
             bx, by = sr.pos[0], sr.pos[1]
@@ -1753,7 +1759,7 @@ class World:
                     continue
                 tc = [pl.pos[0], pl.pos[1], pl.pos[2] + C.PLAYER_HEIGHT * 0.5]
                 if _dist2(ws.pos, tc) < (C.PROJECTILE_RADIUS + 0.7) ** 2:
-                    self._hurt(pl, C.WORMCHELLO_PROJ_DAMAGE, now, None)
+                    self._hurt(pl, C.WORMCHELLO_PROJ_DAMAGE, now, None, cause="wormchello")
                     hit = True
                     break
             if hit or _hits_wall(ws.pos) or ws.pos[2] <= 0.0 or now >= ws.die_at:
@@ -1792,7 +1798,7 @@ class World:
                     continue
                 tc = [pl.pos[0], pl.pos[1], pl.pos[2] + C.PLAYER_HEIGHT * 0.5]
                 if _dist2(sh.pos, tc) < (C.SKIBIDI_RADIUS + 0.7) ** 2:
-                    self._hurt(pl, C.SKIBIDI_DAMAGE, now, None)
+                    self._hurt(pl, C.SKIBIDI_DAMAGE, now, None, cause="neon_ant")
                     hit = True
                     break
             # зелье гасится о стену (сквозь стены не летает)
@@ -1903,8 +1909,8 @@ class World:
                 continue
             d = math.hypot(pl.pos[0] - pos[0], pl.pos[1] - pos[1])
             if d < r:
-                dmg = C.BOSS_EXPLOSION_DAMAGE * (1.0 - d / r)   # спад к краю
-                self._hurt(pl, dmg, now, None)
+                dmg = C.BOSS_EXPLOSION_DAMAGE * (1.0 - d / r)
+                self._hurt(pl, dmg, now, None, cause="boss")
                 # отброс игрока считает клиент (по событию boss_explode) — он
                 # авторитетен над своей позицией; сервер бьёт уроном.
         # отброс мобов (тараканы/неоновые) из эпицентра
@@ -1988,7 +1994,7 @@ class World:
         if now >= self.slit_deadline:
             for pl in self.players.values():
                 if not pl.dead:
-                    self._hurt(pl, C.PLAYER_MAX_HP * 2, now, None)
+                    self._hurt(pl, C.PLAYER_MAX_HP * 2, now, None, cause="slit")
             self._end_slit_event(now)
             self.events.append({"t": "event", "kind": "slit_failed"})
 
@@ -2023,44 +2029,58 @@ class World:
     def _touch_damage(self, dt, now):
         for pl in self.players.values():
             if pl.hp <= 0 or pl.god_mode or now < pl.touch_inv_until or now < pl.respawn_immune_until:
-                continue                      # короткий кулдаун или неуязвимость после воскрешения
+                continue
             touch_dmg = 0
+            touch_cause = None
             # во время ЩЕЛИ тараканы не кусают — они просто ржут над игроком
             if not self.slit_event_active:
                 for ant in self.ants.values():
                     if now >= ant.spawn_immune_until and _dist2(pl.pos, ant.pos) < C.ANT_TOUCH_RANGE ** 2:
                         touch_dmg = max(touch_dmg, C.ANT_TOUCH_DAMAGE)
+                        touch_cause = "ant"
                         break
             if not touch_dmg:
                 for na in self.neon_ants.values():
                     if now >= na.spawn_immune_until and _dist2(pl.pos, na.pos) < C.ANT_TOUCH_RANGE ** 2:
                         touch_dmg = max(touch_dmg, C.ANT_TOUCH_DAMAGE)
+                        touch_cause = "neon_ant"
                         break
             if not touch_dmg:
                 for sr in self.smile_roaches.values():
                     if (now >= sr.spawn_immune_until
                             and _dist2(pl.pos, sr.pos) < C.ANT_TOUCH_RANGE ** 2):
                         touch_dmg = max(touch_dmg, C.ANT_TOUCH_DAMAGE)
+                        touch_cause = "smile"
                         break
             if self.boss and _dist2(pl.pos, self.boss.pos) < (C.ANT_TOUCH_RANGE + 1.5) ** 2:
                 touch_dmg = max(touch_dmg, C.ANT_TOUCH_DAMAGE)
+                touch_cause = "boss"
             if self.boss2 and _dist2(pl.pos, self.boss2.pos) < (C.ANT_TOUCH_RANGE + 1.5) ** 2:
                 touch_dmg = max(touch_dmg, C.ANT_TOUCH_DAMAGE)
+                touch_cause = "boss"
             if (self.wormchello and self.wormchello.state == "SLITHERING"
                     and _dist2(pl.pos, self.wormchello.pos) < (C.ANT_TOUCH_RANGE + 1.2) ** 2):
                 touch_dmg = max(touch_dmg, C.WORMCHELLO_TOUCH_DAMAGE)
+                touch_cause = "wormchello"
             if self.bk_boss and _dist2(pl.pos, self.bk_boss.pos) < (C.ANT_TOUCH_RANGE + 1.5) ** 2:
                 touch_dmg = max(touch_dmg, C.BLACK_KING_TOUCH_DAMAGE)
+                touch_cause = "black_king"
             if not touch_dmg:
                 for m in self.bk_minions.values():
                     if _dist2(pl.pos, m.pos) < C.ANT_TOUCH_RANGE ** 2:
                         touch_dmg = max(touch_dmg, C.BLACK_KING_MINION_TOUCH_DAMAGE)
+                        touch_cause = "bk_minion"
                         break
             if touch_dmg:
                 pl.touch_inv_until = now + C.ANT_TOUCH_CD
-                self._hurt(pl, touch_dmg, now, None)
+                # звук атаки моба (для обычных тараканов и улыбашек)
+                if touch_cause in ("ant", "smile"):
+                    self.events.append({"t": "event", "kind": "mob_attack",
+                                        "mob": touch_cause,
+                                        "pos": [round(pl.pos[0], 1), round(pl.pos[1], 1), 0.0]})
+                self._hurt(pl, touch_dmg, now, None, cause=touch_cause)
 
-    def _hurt(self, target, dmg, now, attacker_id):
+    def _hurt(self, target, dmg, now, attacker_id, cause=None):
         if target.dead:
             return
         if now < target.respawn_immune_until or target.god_mode:
@@ -2071,7 +2091,7 @@ class World:
             atk.score += 1
         if target.hp <= 0:
             target.hp = 0
-            target.dead = True                       # настоящая смерть
+            target.dead = True
             target.respawn_at = now + 3.0
             target.deaths += 1
             if atk and atk is not target:
@@ -2080,7 +2100,7 @@ class World:
                                     "victim": target.name, "by": atk.name})
             else:
                 self.events.append({"t": "event", "kind": "death",
-                                    "victim": target.name})
+                                    "victim": target.name, "cause": cause or "unknown"})
 
     def _respawn_dead(self, now):
         for pl in self.players.values():
@@ -2287,7 +2307,7 @@ class World:
                 # XY-цилиндр: летящие снаряды на Z=12.9 должны попадать и в игроков на земле
                 d2_xy = (sh.pos[0]-pl.pos[0])**2 + (sh.pos[1]-pl.pos[1])**2
                 if d2_xy < 1.44:   # XY-радиус ~1.2
-                    self._hurt(pl, C.BK_SHOT_DAMAGE, now, None)
+                    self._hurt(pl, C.BK_SHOT_DAMAGE, now, None, cause="black_king")
                     self.events.append({"t": "event", "kind": "bk_shot_hit",
                                         "pos": [round(sh.pos[0], 2), round(sh.pos[1], 2),
                                                 max(0.0, round(sh.pos[2], 2))]})

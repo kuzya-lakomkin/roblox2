@@ -196,22 +196,23 @@ class WormModel:
 
 
 class RemoteAvatar:
-    """Визуальное представление другого игрока: анимированный червь + ник + эмоция."""
+    """Визуальное представление другого игрока: анимированный червь + ник + HP + эмоция."""
 
-    def __init__(self, parent, pid, name, font=None):
-        color = PLAYER_COLORS[pid % len(PLAYER_COLORS)]
+    def __init__(self, parent, pid, name, font=None, color=None):
+        body_color = tuple(color) + (1,) if color and len(color) == 3 else PLAYER_COLORS[pid % len(PLAYER_COLORS)]
         self.root = parent.attachNewNode(f"player{pid}")
 
-        self.model = WormModel(body_color=color)
+        self.model = WormModel(body_color=body_color)
         self.model.root.reparentTo(self.root)
 
-        # ник
+        # ник (цвет текста = цвет тела игрока)
+        nr, ng, nb = body_color[:3]
         tn = TextNode(f"name{pid}")
         if font:
             tn.setFont(font)
         tn.setText(name)
         tn.setAlign(TextNode.ACenter)
-        tn.setTextColor(1, 1, 1, 1)
+        tn.setTextColor(nr, ng, nb, 1)
         tn.setCardColor(0, 0, 0, 0.55)
         tn.setCardAsMargin(0.2, 0.2, 0.1, 0.1)
         tn.setCardDecal(True)
@@ -221,6 +222,22 @@ class RemoteAvatar:
         self.nametag.setBillboardPointEye()
         self.nametag.setLightOff(1)
         self.nametag.setDepthOffset(1)
+
+        # HP-бар под ником (маленькая полоска здоровья, видна всем кроме самого игрока)
+        from client.procgen import make_box as _mb
+        self._hp_bar_root = self.root.attachNewNode(f"hpbar{pid}")
+        self._hp_bar_root.setZ(2.55)
+        self._hp_bar_root.setBillboardPointEye()
+        self._hp_bar_root.setLightOff(1)
+        self._hp_bar_root.setDepthOffset(1)
+        bar_w = 1.1
+        self._hp_bar_bg = _mb(bar_w, 0.001, 0.15, (0.18, 0.08, 0.08, 1))
+        self._hp_bar_bg.reparentTo(self._hp_bar_root)
+        self._hp_bar_fill = _mb(bar_w, 0.001, 0.15, (nr, ng, nb, 1))
+        self._hp_bar_fill.reparentTo(self._hp_bar_root)
+        self._hp_max_w = bar_w
+        self._hp_frac = 1.0
+        self._body_color = (nr, ng, nb)
 
         # подпись эмоции
         self.emote_tn = TextNode(f"emote{pid}")
@@ -259,13 +276,21 @@ class RemoteAvatar:
             on_ground = z <= 0.06 and abs(vz) < 1.0
         self._prev = (x, y, z)
         emote = snap.get("emote")
-        # сохраняем — model.update вызывается в lerp_step каждый кадр
         self._anim_moving = moving
         self._anim_vz = vz
         self._anim_on_ground = on_ground
         self._anim_emote = emote
         self._anim_dead = dead
-        # эмоция и иммунитет — обновляются по снапшоту (не требуют 60fps)
+        # HP-бар
+        hp = snap.get("hp", 100)
+        max_hp = 100
+        frac = max(0.0, min(1.0, hp / max_hp))
+        if abs(frac - self._hp_frac) > 0.01:
+            self._hp_frac = frac
+            w = self._hp_max_w
+            self._hp_bar_fill.setScale(max(1e-4, frac), 1, 1)
+            self._hp_bar_fill.setX(-w / 2 + frac * w / 2)
+        # эмоция и иммунитет
         if dead or not emote:
             self.emote_np.hide()
         else:
@@ -391,6 +416,11 @@ class Roblox2(ShowBase):
         self._sfx_vol     = float(settings.get("sfx_vol",   1.0))
         self._mouse_sens  = float(settings.get("mouse_sens", MOUSE_SENS))
         self.gfx_quality = _GFX_QUALITY  # уже применено в PRC до создания окна
+        import random as _rnd
+        # рандомный яркий цвет игрока — виден у всех; можно сменить в меню
+        self.player_color = [round(_rnd.uniform(0.35, 1.0), 2),
+                             round(_rnd.uniform(0.35, 1.0), 2),
+                             round(_rnd.uniform(0.35, 1.0), 2)]
         self.my_id = None
         self.net = None
         self.world_built = False         # игровое состояние (HUD/ввод/частицы) построено
@@ -712,6 +742,8 @@ class Roblox2(ShowBase):
         # звук (музыка инициализируется в __init__ и играет уже в меню)
         self._worm_step_snd = None
         self._roach_step_snd = None
+        self._neon_step_snd = None
+        self._smile_step_snd = None
         self._bee_snd = None
         self._prev_hp = C.PLAYER_MAX_HP
         self._prev_boss_respect = 0
@@ -742,7 +774,8 @@ class Roblox2(ShowBase):
         self._prev_boss_respect = 0
         self.net = NetworkClient(self.host, self.port)
         self.net.start()
-        self.net.send({"t": "join", "name": self.player_name, "token": self.auth_token})
+        self.net.send({"t": "join", "name": self.player_name,
+                       "token": self.auth_token, "color": self.player_color})
         self._play_oneshot(AC.SFX_JOIN_PHASE1)   # звук входа на сервер
 
     def _disconnect(self):
@@ -2041,6 +2074,8 @@ class Roblox2(ShowBase):
     def _stop_step_loops(self):
         self._set_loop("_worm_step_snd", AC.SFX_WORM_STEP, False)
         self._set_loop("_roach_step_snd", AC.SFX_COCKROACH_STEP, False)
+        self._set_loop("_neon_step_snd", AC.SFX_NEON_ANT_STEP, False)
+        self._set_loop("_smile_step_snd", AC.SFX_SMILE_STEP, False)
         self._set_loop("_roach_laugh_snd", AC.SFX_COCKROACH_LAUGH, False)
         self._set_loop("_bee_snd", AC.SFX_BEE_LOOP, False)
 
@@ -2277,6 +2312,20 @@ class Roblox2(ShowBase):
             self._roach_step_snd.setVolume(self._vol_for_dist(nd, max_dist=35.0) * self._sfx_vol)
         if self._worm_step_snd is not None:
             self._worm_step_snd.setVolume(0.5 * self._sfx_vol)
+        # шаги неоновых муравьёв
+        self._set_loop("_neon_step_snd", AC.SFX_NEON_ANT_STEP,
+                       bool(self.neon_ant_nodes))
+        if self._neon_step_snd is not None and self.neon_ant_nodes:
+            nd2 = min(math.hypot(n.getX() - self.pos.x, n.getY() - self.pos.y)
+                      for n in self.neon_ant_nodes.values())
+            self._neon_step_snd.setVolume(self._vol_for_dist(nd2, max_dist=30.0) * self._sfx_vol)
+        # шаги зелёных тараканов
+        self._set_loop("_smile_step_snd", AC.SFX_SMILE_STEP,
+                       bool(self.smile_roach_nodes))
+        if self._smile_step_snd is not None and self.smile_roach_nodes:
+            nd3 = min(math.hypot(n.getX() - self.pos.x, n.getY() - self.pos.y)
+                      for n in self.smile_roach_nodes.values())
+            self._smile_step_snd.setVolume(self._vol_for_dist(nd3, max_dist=30.0) * self._sfx_vol)
         # ржач тараканов: следующий звук смеха ПОСЛЕ того, как доиграл предыдущий
         if slit_active and self.alive_ants > 0:
             if self._roach_laugh_snd is None:
@@ -2506,9 +2555,14 @@ class Roblox2(ShowBase):
                 self._handle_event(msg)
 
     def _handle_event(self, msg):
+        _CAUSE_NAMES = {
+            "ant": "таракан", "neon_ant": "неоновый муравей", "smile": "зелёный таракан",
+            "boss": "Папаня", "wormchello": "ЧЕРВЯЧЕЛЛО", "black_king": "BLACK KING",
+            "bk_minion": "копия BLACK KING", "slit": "ЩЕЛЬ", "player": None, "unknown": None,
+        }
         kind = msg.get("kind")
         if kind == "splash":
-            self._add_chat_line(f"{msg.get('by')} облил {msg.get('victim')} секретной жидкостью!")
+            self._add_chat_line(f"{msg.get('by')} убил {msg.get('victim')} сиропом!")
         elif kind == "ant_killed":
             import random
             pos = msg.get("pos")
@@ -2696,7 +2750,19 @@ class Roblox2(ShowBase):
                                      color=(0.55, 0.95, 0.35, 1), speed=5.0, size=0.45,
                                      life=1.4, grav=-1.0, spread=1.0, up=0.5)
         elif kind == "death":
-            pass  # смерть видна в death_overlay; чат от этого только спамил
+            victim = msg.get("victim", "?")
+            cause_key = msg.get("cause", "unknown")
+            cause_name = _CAUSE_NAMES.get(cause_key)
+            if cause_name:
+                self._add_chat_line(f"{victim} убит: {cause_name}")
+            else:
+                self._add_chat_line(f"{victim} погиб")
+        elif kind == "mob_attack":
+            mob = msg.get("mob")
+            if mob == "ant":
+                self._play_oneshot(AC.SFX_ANT_ATTACK, volume=0.9)
+            elif mob == "smile":
+                self._play_oneshot(AC.SFX_SMILE_ATTACK, volume=0.9)
         elif kind == "wave":
             self._show_notice(f"ВОЛНА {msg.get('wave')}  тараканов: {msg.get('count')}",
                               color=(1.0, 0.65, 0.1, 1), duration=3.0)
@@ -2850,8 +2916,10 @@ class Roblox2(ShowBase):
                 continue
             seen.add(pid)
             if pid not in self.remote:
+                snap_color = snap.get("color")
                 self.remote[pid] = RemoteAvatar(self.render, pid, snap["name"],
-                                                self.fonts.get("world"))
+                                                self.fonts.get("world"),
+                                                color=snap_color)
             self.remote[pid].update(snap, globalClock.getDt())
         for pid in list(self.remote):
             if pid not in seen:
@@ -3335,7 +3403,7 @@ class Roblox2(ShowBase):
             sph.hide()
             self._wc_lina_nodes.append(sph)
             bar = WorldBar(self.render,
-                           label=f"ЛИНА {i+1}",
+                           label=f"LEAN {i+1}",
                            width=1.8, height=0.28,
                            fill_color=(0.25, 0.80, 1.0, 1),
                            font=self.fonts.get("world"))
@@ -3481,12 +3549,16 @@ class Roblox2(ShowBase):
             for seg_np in self._wc_seg_nodes:
                 seg_np.hide()
 
-        # --- НОРЫ (показывать пока босс активен) ---
-        for n in self._wc_hole_nodes:
-            n.show()
+        # --- НОРЫ (показывать пока босс активен, но не во время вступительной кат-сцены) ---
+        cs_running = getattr(self, "_wc_cutscene_t", -1.0) >= 0
+        if not cs_running:
+            for n in self._wc_hole_nodes:
+                n.show()
+        # пока кат-сцена — видимостью нор управляет _update_wc_filter
 
         # --- СФЕРЫ ЛИНА ---
         from common.config import LINA_SPHERE_POSITIONS
+        cs_lina_ok = not cs_running or getattr(self, "_wc_cs_lina_shown", True)
         self._wc_lina_pulse_t = getattr(self, "_wc_lina_pulse_t", 0.0)
         self._wc_lina_pulse_t += getattr(self, "_last_dt", 0.033)
         pulse = 0.85 + 0.15 * _m.sin(self._wc_lina_pulse_t * 3.0)
@@ -3497,7 +3569,8 @@ class Roblox2(ShowBase):
                 lhp, lalive = 150, 1
             lx, ly, lz = LINA_SPHERE_POSITIONS[i]
             if lalive:
-                lnode.show()
+                if cs_lina_ok:
+                    lnode.show()
                 lnode.setScale(pulse)
                 lbar.set_fraction(max(0.0, lhp / 150.0))
                 lbar.set_pos(lx, ly, lz + 2.4)
@@ -3569,7 +3642,7 @@ class Roblox2(ShowBase):
         # t=1.2 — появление сфер ЛИНА
         if t >= 1.2 and not self._wc_cs_lina_shown:
             self._wc_cs_lina_shown = True
-            self._show_notice("Уничтожь сферы ЛИНА!", color=(0.3, 0.85, 1.0, 1), duration=5.0)
+            self._show_notice("Уничтожь сферы LEAN!", color=(0.3, 0.85, 1.0, 1), duration=5.0)
             for i, n in enumerate(self._wc_lina_nodes):
                 n.show()
                 lx, ly, lz = LINA_SPHERE_POSITIONS[i]

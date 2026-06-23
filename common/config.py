@@ -185,6 +185,7 @@ SMILE_ROACH_SPRAY_INTERVAL = 2.5  # секунд между распыления
 SMILE_ROACH_SPRAY_RADIUS = 6.0  # радиус облака аэрозоля
 SMILE_ROACH_SLOW_FACTOR = 0.40  # множитель скорости игрока в облаке
 SMILE_ROACH_SLOW_TIME = 2.5     # длительность замедления, сек
+SMILE_ROACH_SPAWN_IMMUNE = 5.0  # неуязвимость при спавне, сек
 
 # --- Двойной босс ---
 DOUBLE_BOSS_WAVE = 9            # на этой волне появляются два Папани

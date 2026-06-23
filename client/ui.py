@@ -412,6 +412,13 @@ class KeyBindingsScreen(Screen):
 
 # ── Главное меню ─────────────────────────────────────────────────────────────
 
+_COLOR_PRESETS = [
+    (0.16, 0.89, 0.91), (1.00, 0.30, 0.55), (0.62, 0.31, 0.87),
+    (0.20, 0.90, 0.40), (1.00, 0.68, 0.12), (0.95, 0.95, 0.30),
+    (0.30, 0.55, 1.00), (1.00, 0.40, 0.20),
+]
+
+
 class MainMenu(Screen):
     """Хаб-экран. Кнопки = переходы между фазами."""
 
@@ -428,6 +435,26 @@ class MainMenu(Screen):
             frameColor=(0.10, 0.09, 0.05, 0.85), text_fg=TEXT, **nick_kw,
         )
 
+        # выбор цвета игрока (8 свотчей в ряд)
+        self._label("Цвет:", (-0.30, 0, 0.18), scale=0.038, color=ACCENT)
+        self._color_btns = []
+        sw = 0.052  # ширина свотча
+        for i, col in enumerate(_COLOR_PRESETS):
+            cx = -0.26 + i * (sw + 0.008)
+            btn = DirectButton(
+                parent=self.root,
+                frameSize=(-sw/2, sw/2, -sw/2, sw/2),
+                pos=(cx, 0, 0.18),
+                frameColor=col + (1,),
+                relief=1,
+                command=self._pick_color,
+                extraArgs=[col, i],
+                borderWidth=(0.005, 0.005),
+            )
+            self._color_btns.append(btn)
+        self._sel_idx = None
+        self._refresh_color_selection(app)
+
         self._button_stack([
             ("Тараканья нора (бой)", app.start_combat),
             ("Обучение", app.start_tutorial),
@@ -435,7 +462,22 @@ class MainMenu(Screen):
             ("Магазин", app.goto_shop),
             ("Настройки", app.open_settings),
             ("Выход", app.quit_game),
-        ], top_y=0.14)
+        ], top_y=0.08)
+
+    def _pick_color(self, col, idx):
+        self.app.player_color = list(col)
+        self._sel_idx = idx
+        for i, btn in enumerate(self._color_btns):
+            bw = 0.010 if i == idx else 0.003
+            btn["borderWidth"] = (bw, bw)
+
+    def _refresh_color_selection(self, app):
+        pc = app.player_color
+        for i, col in enumerate(_COLOR_PRESETS):
+            if all(abs(pc[j] - col[j]) < 0.05 for j in range(3)):
+                self._sel_idx = i
+                self._color_btns[i]["borderWidth"] = (0.010, 0.010)
+                break
 
     def get_name(self):
         txt = (self.name_entry.get() or "").strip()

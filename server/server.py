@@ -137,6 +137,10 @@ class GameServer:
                         pl = self.world.add_player(pid, name)
                         if auth:
                             pl.user_id = user_id
+                        # цвет игрока из клиента (список [r, g, b] float 0-1)
+                        client_color = msg.get("color")
+                        if isinstance(client_color, list) and len(client_color) >= 3:
+                            pl.color = [max(0.0, min(1.0, float(v))) for v in client_color[:3]]
 
                         self.send(pid, {
                             "t": "welcome", "id": pid,

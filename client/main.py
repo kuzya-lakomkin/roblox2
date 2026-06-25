@@ -993,9 +993,8 @@ class Roblox2(ShowBase):
         self._vid_shot_t = 0.0
         self._vid_roaches = []      # список NodePath спавненных тараканов
         self._vid_recording = False
-        self._vid_frame = 0
+        self._vid_recorder = None
         self._vid_record_accum = 0.0
-        self._vid_output_dir = None
 
         self.accept("tab",    self._vid_next_shot)
         self.accept("space",  self._vid_spawn_cockroaches)
@@ -1042,48 +1041,36 @@ class Roblox2(ShowBase):
 
     def _vid_start_recording(self):
         import os, time as _t
+        from client.videography import VideoRecorder
         ts = int(_t.time())
-        vid_dir = os.path.join(os.path.expanduser("~"), "Videos", "SWAGA", f"vid_{ts}")
+        vid_dir = os.path.join(os.path.expanduser("~"), "Videos", "SWAGA")
         os.makedirs(vid_dir, exist_ok=True)
-        self._vid_output_dir = vid_dir
-        self._vid_frame = 0
+        out_path = os.path.join(vid_dir, f"swaga_{ts}.mp4")
+        try:
+            self._vid_recorder = VideoRecorder(self.win, out_path)
+        except Exception as e:
+            print(f"[VID] Не удалось запустить FFmpeg: {e}")
+            return
         self._vid_record_accum = 0.0
         self._vid_recording = True
-        print(f"[VID] Запись начата: {vid_dir}")
+        print(f"[VID] Запись → {out_path}")
         self._vid_update_title()
 
     def _vid_finish_recording(self):
-        import os, subprocess as _sp
         self._vid_recording = False
-        d = self._vid_output_dir
-        n = self._vid_frame
-        print(f"[VID] Записано кадров: {n}")
-        if n > 0 and d:
-            out_mp4 = os.path.join(d, "videography.mp4")
-            cmd = [
-                "ffmpeg", "-y", "-framerate", "30",
-                "-i", os.path.join(d, "frame_%06d.png"),
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
-                "-movflags", "+faststart", out_mp4,
-            ]
-            try:
-                r = _sp.run(cmd, capture_output=True, timeout=600)
-                if r.returncode == 0:
-                    print(f"[VID] Видео сохранено: {out_mp4}")
-                else:
-                    print(f"[VID] ffmpeg завершился с ошибкой. Кадры: {d}")
-            except FileNotFoundError:
-                print(f"[VID] ffmpeg не найден. Кадры как PNG: {d}")
-            except _sp.TimeoutExpired:
-                print(f"[VID] ffmpeg завис. Кадры как PNG: {d}")
+        rec = getattr(self, "_vid_recorder", None)
+        if rec is None:
+            return
+        print(f"[VID] Финализация ({rec.frames} кадров, пропущено: {rec.dropped})...")
+        path = rec.finish()
+        print(f"[VID] Готово: {path}")
+        self._vid_recorder = None
         self._vid_update_title()
 
     def _vid_capture_frame(self):
-        import os
-        from panda3d.core import Filename as _Fn
-        path = os.path.join(self._vid_output_dir, f"frame_{self._vid_frame:06d}.png")
-        self.screenshot(namePrefix=_Fn.fromOsSpecific(path), defaultFilename=False)
-        self._vid_frame += 1
+        rec = getattr(self, "_vid_recorder", None)
+        if rec is not None:
+            rec.capture()
 
     def _vid_update_title(self):
         from client.videography import SHOTS

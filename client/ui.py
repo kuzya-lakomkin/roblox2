@@ -467,6 +467,7 @@ class MainMenu(Screen):
         self._button_stack([
             ("Тараканья нора (бой)", app.start_combat),
             ("Обучение", app.start_tutorial),
+            ("Видеография", app.start_videography),
             ("Улей (ферма)", app.goto_farm),
             ("Магазин", app.goto_shop),
             ("Настройки", app.open_settings),

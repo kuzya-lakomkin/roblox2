@@ -978,6 +978,145 @@ class Roblox2(ShowBase):
         self._play_music(AC.MUSIC_HUB)   # вернуть музыку меню
         self.main_menu.show()
 
+    # ---------- ВИДЕОГРАФИЯ ----------
+
+    def start_videography(self):
+        from client.videography import SHOTS
+        self._hide_all_screens()
+        self._build_world_scene()   # карта нужна, игровые объекты — нет
+        self.state = "VIDEOGRAPHY"
+        self._set_menu_blur(False)
+        self._set_mouse_captured(False)
+        self._play_music(AC.MUSIC_PHASE1)
+
+        self._vid_shot_idx = 0
+        self._vid_shot_t = 0.0
+        self._vid_roaches = []      # список NodePath спавненных тараканов
+        self._vid_recording = False
+        self._vid_frame = 0
+        self._vid_record_accum = 0.0
+        self._vid_output_dir = None
+
+        self.accept("tab",    self._vid_next_shot)
+        self.accept("space",  self._vid_spawn_cockroaches)
+        self.accept("r",      self._vid_toggle_record)
+        self.accept("escape", self._exit_videography)
+        self._vid_update_title()
+
+    def _exit_videography(self):
+        if getattr(self, "_vid_recording", False):
+            self._vid_finish_recording()
+        for np in getattr(self, "_vid_roaches", []):
+            try:
+                np.removeNode()
+            except Exception:
+                pass
+        self._vid_roaches = []
+        for k in ("tab", "space", "r"):
+            self.ignore(k)
+        self.goto_hub()
+
+    def _vid_next_shot(self):
+        from client.videography import SHOTS
+        self._vid_shot_idx = (self._vid_shot_idx + 1) % len(SHOTS)
+        self._vid_shot_t = 0.0
+        self._vid_update_title()
+
+    def _vid_spawn_cockroaches(self):
+        import random as _rnd
+        for _ in range(8):
+            x = _rnd.uniform(-26, 26)
+            y = _rnd.uniform(-26, 26)
+            np = make_cockroach()
+            np.reparentTo(self.render)
+            np.setPos(x, y, 0.0)
+            np.setH(_rnd.uniform(0, 360))
+            np.setScale(0.7)
+            self._vid_roaches.append(np)
+
+    def _vid_toggle_record(self):
+        if getattr(self, "_vid_recording", False):
+            self._vid_finish_recording()
+        else:
+            self._vid_start_recording()
+
+    def _vid_start_recording(self):
+        import os, time as _t
+        ts = int(_t.time())
+        vid_dir = os.path.join(os.path.expanduser("~"), "Videos", "SWAGA", f"vid_{ts}")
+        os.makedirs(vid_dir, exist_ok=True)
+        self._vid_output_dir = vid_dir
+        self._vid_frame = 0
+        self._vid_record_accum = 0.0
+        self._vid_recording = True
+        print(f"[VID] Запись начата: {vid_dir}")
+        self._vid_update_title()
+
+    def _vid_finish_recording(self):
+        import os, subprocess as _sp
+        self._vid_recording = False
+        d = self._vid_output_dir
+        n = self._vid_frame
+        print(f"[VID] Записано кадров: {n}")
+        if n > 0 and d:
+            out_mp4 = os.path.join(d, "videography.mp4")
+            cmd = [
+                "ffmpeg", "-y", "-framerate", "30",
+                "-i", os.path.join(d, "frame_%06d.png"),
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
+                "-movflags", "+faststart", out_mp4,
+            ]
+            try:
+                r = _sp.run(cmd, capture_output=True, timeout=600)
+                if r.returncode == 0:
+                    print(f"[VID] Видео сохранено: {out_mp4}")
+                else:
+                    print(f"[VID] ffmpeg завершился с ошибкой. Кадры: {d}")
+            except FileNotFoundError:
+                print(f"[VID] ffmpeg не найден. Кадры как PNG: {d}")
+            except _sp.TimeoutExpired:
+                print(f"[VID] ffmpeg завис. Кадры как PNG: {d}")
+        self._vid_update_title()
+
+    def _vid_capture_frame(self):
+        import os
+        from panda3d.core import Filename as _Fn
+        path = os.path.join(self._vid_output_dir, f"frame_{self._vid_frame:06d}.png")
+        self.screenshot(namePrefix=_Fn.fromOsSpecific(path), defaultFilename=False)
+        self._vid_frame += 1
+
+    def _vid_update_title(self):
+        from client.videography import SHOTS
+        shot = SHOTS[self._vid_shot_idx]
+        rec_tag = " [REC]" if getattr(self, "_vid_recording", False) else ""
+        title = (
+            f"ВИДЕОГРАФИЯ{rec_tag} | [{self._vid_shot_idx+1}/{len(SHOTS)}] {shot[0]}"
+            f"  |  Tab=след  Space=тараканы  R=запись  Esc=выход"
+        )
+        if hasattr(self.win, "requestProperties"):
+            props = WindowProperties()
+            props.setTitle(title)
+            self.win.requestProperties(props)
+
+    def _update_videography(self, dt):
+        from client.videography import SHOTS
+        name, duration, cam_fn, look_fn = SHOTS[self._vid_shot_idx]
+
+        self._vid_shot_t = min(self._vid_shot_t + dt, duration)
+        raw_t = self._vid_shot_t / max(duration, 1e-6)
+        t = raw_t * raw_t * (3.0 - 2.0 * raw_t)   # smoothstep
+
+        cx, cy, cz = cam_fn(t)
+        lx, ly, lz = look_fn(t)
+        self.camera.setPos(cx, cy, cz)
+        self.camera.lookAt(lx, ly, lz)
+
+        if self._vid_recording:
+            self._vid_record_accum += dt
+            if self._vid_record_accum >= 1.0 / 30.0:
+                self._vid_record_accum -= 1.0 / 30.0
+                self._vid_capture_frame()
+
     # tutorial methods
 
     def start_tutorial(self):
@@ -2250,6 +2389,9 @@ class Roblox2(ShowBase):
                 self._set_loop("_worm_step_snd", AC.SFX_WORM_STEP, _tut_moving)
                 if self._worm_step_snd is not None:
                     self._worm_step_snd.setVolume(0.5 * self._sfx_vol)
+                return Task.cont
+            if self.state == "VIDEOGRAPHY":
+                self._update_videography(dt)
                 return Task.cont
             self._update_menu_background(dt)   # живой фон меню (без подключения)
             return Task.cont

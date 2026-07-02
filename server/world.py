@@ -5,22 +5,34 @@ import random
 import time
 
 from common import config as C
-from common.citydata import (building_rects, in_any_building, BOSS_SPAWN,
+from common import citydata as CD
+from common.citydata import (building_rects, in_any_building, CUP_SPOTS,
                              platform_top_at, support_z, near_wall,
-                             slit_spawn_points, line_blocked, WALL_HEIGHT,
-                             LEVEL2_Z, CUP_SPOTS, CUP_SPOT_RADIUS)
+                             slit_spawn_points, line_blocked)
 from server.navgrid import NavGrid
 
-_BUILDING_RECTS = building_rects(pad=0.5)
-_WALL_NEAR_RECTS = building_rects(pad=1.3)   # «впритык к стене» — для лазания тараканов
-_LOS_RECTS = building_rects(pad=0.0)         # стены для проверки прямой видимости (стрельба)
+# Кэши геометрии карты. Списки мутируются НА МЕСТЕ в refresh_map_caches(),
+# чтобы сменные карты (common/mapformat) подхватывались без перезапуска модуля.
+_BUILDING_RECTS = []
+_WALL_NEAR_RECTS = []   # «впритык к стене» — для лазания тараканов
+_LOS_RECTS = []         # стены для проверки прямой видимости (стрельба)
+_SLIT_POINTS = []
+
+
+def refresh_map_caches():
+    """Пересобрать кэши после citydata.apply_map (вызывается и из World.__init__)."""
+    _BUILDING_RECTS[:] = building_rects(pad=0.5)
+    _WALL_NEAR_RECTS[:] = building_rects(pad=1.3)
+    _LOS_RECTS[:] = building_rects(pad=0.0)
+    _SLIT_POINTS[:] = slit_spawn_points()
+
+
+refresh_map_caches()
 
 
 def _hits_wall(pos):
     """Снаряд врезался в стену (ниже верха стен и внутри её footprint)."""
-    return pos[2] <= WALL_HEIGHT and in_any_building(pos[0], pos[1], _LOS_RECTS)
-
-_SLIT_POINTS = slit_spawn_points()
+    return pos[2] <= CD.WALL_HEIGHT and in_any_building(pos[0], pos[1], _LOS_RECTS)
 
 _DROP_KINDS = [k for k, _v, _w in C.DROP_TABLE]
 _DROP_VALUE = {k: v for k, v, _w in C.DROP_TABLE}
@@ -58,7 +70,8 @@ class Player:
     def __init__(self, pid, name):
         self.pid = pid
         self.name = name
-        self.pos = [random.uniform(-12, 12), random.uniform(-20, -10), 0.0]
+        sx, sy = CD.PLAYER_SPAWN
+        self.pos = [sx + random.uniform(-12, 12), sy + random.uniform(-5, 5), 0.0]
         self.h = 0.0
         self.p = 0.0
         self.hp = C.PLAYER_MAX_HP
@@ -282,7 +295,7 @@ class Boss:
     def __init__(self, now, spawn_pos=None):
         self.respect = 0
         self.respect_max = C.BOSS_RESPECT_MAX
-        sp = spawn_pos or BOSS_SPAWN
+        sp = spawn_pos or CD.BOSS_SPAWN
         self.pos = [sp[0], sp[1], 0.0]
         self.dir = [0.0, 1.0]
         self.h = 0.0
@@ -927,7 +940,7 @@ class BlackKing:
         # обновить режим полёта: летим если хоть один игрок на 2-м этаже
         if players and self.phase == 2:
             any_up = any(
-                not pl.dead and pl.pos[2] >= WALL_HEIGHT - 2.0
+                not pl.dead and pl.pos[2] >= CD.WALL_HEIGHT - 2.0
                 for pl in players.values()
             )
             self.flying = any_up
@@ -1093,6 +1106,7 @@ class BlackKingMinion:
 
 class World:
     def __init__(self):
+        refresh_map_caches()         # подхватить активную карту (citydata.apply_map)
         self.players = {}
         self.ants = {}          # aid -> Ant
         self.neon_ants = {}     # nid -> NeonAnt (синие стрелки, после 3-й волны)
@@ -1278,7 +1292,7 @@ class World:
         for i, (sx, sy) in enumerate(CUP_SPOTS):
             if self.cup_spots[i]:
                 continue
-            if (pl.pos[0] - sx) ** 2 + (pl.pos[1] - sy) ** 2 <= CUP_SPOT_RADIUS ** 2:
+            if (pl.pos[0] - sx) ** 2 + (pl.pos[1] - sy) ** 2 <= CD.CUP_SPOT_RADIUS ** 2:
                 self.cup_spots[i] = True
                 pl.cups -= 1
                 self.events.append({"t": "event", "kind": "cup_placed",
@@ -2151,8 +2165,9 @@ class World:
             if pl.dead and now >= pl.respawn_at:
                 pl.dead = False
                 pl.hp = C.PLAYER_MAX_HP
-                # респавн рядом с центральной статуей (витрина у (0,0))
-                pl.pos = [random.uniform(-3, 3), random.uniform(4, 8), 0.0]
+                # респавн у точки PLAYER_RESPAWN (дефолт — центральная витрина)
+                rx, ry = CD.PLAYER_RESPAWN
+                pl.pos = [rx + random.uniform(-3, 3), ry + random.uniform(-2, 2), 0.0]
                 pl.respawn_immune_until = now + C.RESPAWN_IMMUNE_TIME
 
     def _check_wipe(self, now):
@@ -2315,7 +2330,7 @@ class World:
             # origin и target на одной высоте → vel[2]=0 → строго горизонтально
             self.bk_boss.shoot_at = now + C.BK_RAPID_FIRE_INTERVAL
             base_angle = math.radians(self.bk_boss.h)
-            shot_z = LEVEL2_Z + C.PLAYER_HEIGHT * 0.5  # уровень игрока на 2-м этаже
+            shot_z = CD.LEVEL2_Z + C.PLAYER_HEIGHT * 0.5  # уровень игрока на 2-м этаже
             fly_origin = [self.bk_boss.pos[0], self.bk_boss.pos[1], shot_z]
             for i in range(C.BK_RAPID_FIRE_DIRS):
                 angle = base_angle + 2 * math.pi * i / C.BK_RAPID_FIRE_DIRS

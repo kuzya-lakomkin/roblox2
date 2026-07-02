@@ -7,6 +7,7 @@
 """
 
 import math
+import os
 
 from panda3d.core import CardMaker, NodePath, TextNode, Texture
 
@@ -15,9 +16,8 @@ from client.assets import load_texture, texture_exists
 from client.primitives import make_box
 from client.procgen import make_cylinder
 from client import asset_config as AC
-from common.citydata import (ARENA, BOSS_SPAWN, building_specs, PLATFORMS,
-                             LEVEL2_Z, JUMP_PADS, JUMP_PAD_RADIUS, WALL_HEIGHT,
-                             CUP_SPOTS)
+from common import citydata as CD
+from common.citydata import building_specs, JUMP_PAD_RADIUS
 
 # ----- палитра backrooms: грязно-жёлтые обои/ковролин + холодное свечение
 #       люминесцентных ламп и контрастные голубые джамп-пады. -----
@@ -53,49 +53,92 @@ def _tiled_texture(loader, path):
     return tex
 
 
-def build_city(parent, loader=None):
-    """Построить статичную карту backrooms. Возвращает корневой NodePath.
+def _map_texture(loader, name):
+    """Текстура кастомной карты по имени файла в assets/textures/. Нет -> None."""
+    if not name:
+        return None
+    return _tiled_texture(loader, os.path.join("assets", "textures", name))
 
-    loader нужен для текстур пола/стен (backrooms_floor/backrooms_wall);
-    без него (или без файлов) карта рисуется сплошными цветами палитры.
+
+def build_city(parent, loader=None):
+    """Построить статичную карту. Возвращает корневой NodePath.
+
+    Геометрия берётся из common.citydata (включая применённую кастомную карту
+    CD.CURRENT_MAP — из неё же текстуры/цвета/ковры/флаги). loader нужен для
+    текстур; без него (или без файлов) карта рисуется сплошными цветами палитры.
     """
     root = parent.attachNewNode("backrooms")
+    m = CD.CURRENT_MAP
 
-    floor_tex = _tiled_texture(loader, AC.BACKROOMS_FLOOR_TEXTURE)
-    wall_tex = _tiled_texture(loader, AC.BACKROOMS_WALL_TEXTURE)
+    wall_tex_default = _tiled_texture(loader, AC.BACKROOMS_WALL_TEXTURE)
 
-    # ковролин (пол) — с текстурой backrooms_floor, если она есть
-    ground = make_box(2 * ARENA, 2 * ARENA, 0.4,
-                      (1, 1, 1, 1) if floor_tex else CARPET, uv_scale=0.32)
+    # ковролин (пол)
+    if m:
+        floor_tex = _map_texture(loader, m["floor"]["texture"])
+        floor_col = tuple(m["floor"]["color"]) if m["floor"]["color"] else (
+            (1, 1, 1, 1) if floor_tex else CARPET)
+        floor_uv = m["floor"]["uv"]
+    else:
+        floor_tex = _tiled_texture(loader, AC.BACKROOMS_FLOOR_TEXTURE)
+        floor_col = (1, 1, 1, 1) if floor_tex else CARPET
+        floor_uv = 0.32
+    ground = make_box(2 * CD.ARENA, 2 * CD.ARENA, 0.4, floor_col, uv_scale=floor_uv)
     ground.setZ(-0.2)
     if floor_tex:
         ground.setTexture(floor_tex)
     ground.reparentTo(root)
 
-    # периметральные стены (закрывают оба уровня)
-    _build_perimeter(root, wall_tex)
+    # ковровые зоны кастомной карты (тонкие цветные/текстурные накладки на пол)
+    if m:
+        for i, cz in enumerate(m["carpets"]):
+            pad = make_box(cz["w"], cz["d"], 0.1,
+                           tuple(cz["color"]) if cz.get("color") else (1, 1, 1, 1),
+                           uv_scale=cz.get("uv", 0.32))
+            pad.setPos(cz["x"], cz["y"], 0.05 + (i % 3) * 0.012)  # без z-fight
+            tex = _map_texture(loader, cz.get("texture"))
+            if tex:
+                pad.setTexture(tex)
+            pad.reparentTo(root)
 
-    # стены-блоки нижнего уровня (комнаты-лабиринт)
+    # периметральные стены (закрывают оба уровня)
+    if m is None or m["perimeter"]:
+        _build_perimeter(root, wall_tex_default)
+
+    # стены-блоки нижнего уровня
+    wall_defs = m["walls"] if m else None
     for i, (cx, cy, w, d) in enumerate(building_specs()):
-        _build_wall_block(root, cx, cy, w, d, i, wall_tex)
+        tex, col, uv = wall_tex_default, None, 0.4
+        if wall_defs is not None and i < len(wall_defs):
+            wd = wall_defs[i]
+            if wd.get("texture") is not None:
+                tex = _map_texture(loader, wd["texture"])
+            if wd.get("color") is not None:
+                col = tuple(wd["color"])
+            uv = wd.get("uv", 0.4)
+        _build_wall_block(root, cx, cy, w, d, i, tex, color=col, uv=uv)
 
     # гудящие люминесцентные панели: над нижним уровнем и над верхним
-    _build_ceiling_lights(root, z=WALL_HEIGHT - 0.05, step=12.0, panel=4.0)
-    _build_ceiling_lights(root, z=LEVEL2_Z + 9.0, step=14.0, panel=5.0)
+    if m is None or m["ceiling_lights"]:
+        _build_ceiling_lights(root, z=CD.WALL_HEIGHT - 0.05, step=12.0, panel=4.0)
+        _build_ceiling_lights(root, z=CD.LEVEL2_Z + 9.0, step=14.0, panel=5.0)
 
-    # платформы 2-го уровня
-    for cx, cy, w, d in PLATFORMS:
-        _build_platform(root, cx, cy, w, d)
+    # платформы 2-го уровня (в кастомных картах — произвольная высота)
+    plat_defs = m["platforms"] if m else None
+    for i, (cx, cy, w, d, top_z) in enumerate(CD.platform_specs()):
+        col = None
+        if plat_defs is not None and i < len(plat_defs) and plat_defs[i].get("color"):
+            col = tuple(plat_defs[i]["color"])
+        _build_platform(root, cx, cy, w, d, top_z, color=col)
 
     # прыжковые пады (на 2-й уровень)
-    for cx, cy in JUMP_PADS:
+    for cx, cy in CD.JUMP_PADS:
         _build_jump_pad(root, cx, cy)
 
     # «арена» главного босса
     _build_boss_pad(root)
 
-    # 4 угловых пьедестала для белых стаканов (ритуал BLACK KING)
-    for cx, cy in CUP_SPOTS:
+    # угловые пьедесталы для белых стаканов (ритуал BLACK KING)
+    for cx, cy in CD.CUP_SPOTS:
         _build_cup_pedestal(root, cx, cy)
 
     # карта статична — схлопываем сотни узлов в батчи (быстрее рендер)
@@ -105,7 +148,8 @@ def build_city(parent, loader=None):
 
 def _build_perimeter(root, wall_tex=None):
     t = 1.5
-    H = LEVEL2_Z + 10.0                 # высокие стены — закрывают оба уровня
+    ARENA = CD.ARENA
+    H = max(CD.LEVEL2_Z, CD.WALL_HEIGHT) + 10.0   # закрывают оба уровня
     for sx, sy, w, d in (
         (0, ARENA, 2 * ARENA, t),
         (0, -ARENA, 2 * ARENA, t),
@@ -122,13 +166,15 @@ def _build_perimeter(root, wall_tex=None):
         base.reparentTo(root)
 
 
-def _build_wall_block(root, cx, cy, w, d, i, wall_tex=None):
-    H = WALL_HEIGHT
+def _build_wall_block(root, cx, cy, w, d, i, wall_tex=None, color=None, uv=0.4):
+    H = CD.WALL_HEIGHT
     if wall_tex:
-        body = make_box(w, d, H, (1, 1, 1, 1), uv_scale=0.4)
+        body = make_box(w, d, H, color or (1, 1, 1, 1), uv_scale=uv)
         body.setTexture(wall_tex)
     else:
-        body = make_box(w, d, H, WALLPAPER if i % 2 == 0 else WALLPAPER_DARK)
+        body = make_box(w, d, H,
+                        color or (WALLPAPER if i % 2 == 0 else WALLPAPER_DARK),
+                        uv_scale=uv)
     body.setPos(cx, cy, H / 2)
     body.reparentTo(root)
     # плинтус по низу
@@ -144,7 +190,7 @@ def _build_wall_block(root, cx, cy, w, d, i, wall_tex=None):
 
 def _build_ceiling_lights(root, z, step, panel):
     """Сетка светящихся люминесцентных панелей (full-bright) с тёмной рамкой."""
-    n = int(ARENA / step)
+    n = int(CD.ARENA / step)
     coords = [i * step for i in range(-n, n + 1)]
     for x in coords:
         for y in coords:
@@ -156,10 +202,11 @@ def _build_ceiling_lights(root, z, step, panel):
             _neon(light).reparentTo(root)
 
 
-def _build_platform(root, cx, cy, w, d):
+def _build_platform(root, cx, cy, w, d, top=None, color=None):
     th = 0.6
-    top = LEVEL2_Z
-    slab = make_box(w, d, th, PLATFORM_TOP)
+    if top is None:
+        top = CD.LEVEL2_Z
+    slab = make_box(w, d, th, color or PLATFORM_TOP)
     slab.setPos(cx, cy, top - th / 2)
     slab.reparentTo(root)
     # светящаяся кромка по периметру верхней грани
@@ -202,7 +249,7 @@ def _build_cup_pedestal(root, cx, cy):
 
 
 def _build_boss_pad(root):
-    bx, by = BOSS_SPAWN
+    bx, by = CD.BOSS_SPAWN
     disc = make_cylinder(6.2, 0.18, 28, (0.12, 0.10, 0.05, 1))
     disc.setPos(bx, by, 0.06)
     disc.reparentTo(root)

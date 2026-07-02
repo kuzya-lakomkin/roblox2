@@ -1,8 +1,9 @@
 """Authoritative-сервер Roblox 2.
 
-Запуск:  python -m server.server
+Запуск:  python -m server.server [--map maps/имя.json]
 """
 
+import argparse
 import asyncio
 import json as _json
 import sys
@@ -10,6 +11,7 @@ import time
 import urllib.request
 
 from common import config as C
+from common import mapformat
 from common.protocol import encode, StreamDecoder
 from server.world import World
 
@@ -144,7 +146,8 @@ class GameServer:
 
                         self.send(pid, {
                             "t": "welcome", "id": pid,
-                            "world": {"size": C.WORLD_SIZE, "ant_count": C.ANT_COUNT},
+                            "world": {"size": C.WORLD_SIZE, "ant_count": C.ANT_COUNT,
+                                      "map": mapformat.ACTIVE_NAME},
                         })
                         self.broadcast({"t": "chat", "name": "СЕРВЕР",
                                         "msg": f"{name} зашёл в игру"}, exclude=pid)
@@ -227,6 +230,14 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+    parser = argparse.ArgumentParser(description="Игровой сервер SWAGA")
+    parser.add_argument("--map", default="", metavar="ФАЙЛ",
+                        help="файл кастомной карты (maps/имя.json)")
+    args = parser.parse_args()
+    if args.map:
+        data = mapformat.load_and_apply(args.map)   # до создания World
+        print(f"=== Кастомная карта: «{data['name']}» ({args.map}), "
+              f"размер ±{data['size']:g} ===")
     try:
         asyncio.run(GameServer().run())
     except KeyboardInterrupt:

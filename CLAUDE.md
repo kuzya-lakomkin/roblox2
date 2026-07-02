@@ -10,8 +10,9 @@
 ## 2. Стек и запуск
 - Python 3.11, Panda3D, panda3d-gltf. `pip install -r requirements.txt`. (panda3d-simplepbr установлен, НЕ используется.)
 - Windows. Шрифты: `C:\Windows\Fonts\arial.ttf` (`Roblox2._load_font`).
-- Сервер: `python -m server.server` (127.0.0.1:50007)
-- Клиент: `python -m client.main --name Имя [--host IP] [--port N]`
+- Сервер: `python -m server.server [--map maps/имя.json]` (127.0.0.1:50007)
+- Клиент: `python -m client.main --name Имя [--host IP] [--port N] [--map maps/имя.json]`
+- Редактор карт (только dev): `python -m tools.map_editor maps/имя.json` (F1 — помощь)
 - Старт fullscreen (`_go_native_fullscreen`), заголовок `SWAGA`.
 
 **Запуск под агентом (PowerShell):** `Start-Process` с редиректом в `srv.out/err`, `cli.out/err`. Проверять: 2 python-процесса живы, в `cli.err` нет `No definition`/`Traceback`/`Error:`.
@@ -49,10 +50,19 @@ for _ in range(120): app.taskMgr.step()
 common/
   config.py    (~81)    все константы/баланс
   protocol.py  (~50)    построчный JSON TCP: encode(dict)->bytes, StreamDecoder().feed()->[dict]
-  citydata.py  (~220)   арена (ARENA=56): WALL_BLOCKS (_RING+_OUTER+_PLAZA, симметрия×4),
-                        BOSS_SPAWN, building_rects/in_any_building/resolve_collision (высото-завис),
-                        near_wall; PLATFORMS/LEVEL2_Z/support_z/platform_top_at, JUMP_PADS/on_jump_pad,
-                        slit_spawn_points, line_blocked (LOS), CUP_SPOTS
+  citydata.py  (~290)   арена (ARENA=56): WALL_BLOCKS (_RING+_OUTER+_PLAZA, симметрия×4),
+                        BOSS_SPAWN/PLAYER_SPAWN/PLAYER_RESPAWN, building_rects/in_any_building/
+                        resolve_collision (высото-завис), near_wall; PLATFORMS (cx,cy,w,d,z — 5-tuple!)/
+                        LEVEL2_Z/support_z/platform_top_at, JUMP_PADS/on_jump_pad,
+                        slit_spawn_points (по SLIT_WALLS), line_blocked (LOS), CUP_SPOTS.
+                        apply_map(data|None) подменяет всё это (кастомные карты); скаляры читать
+                        ТОЛЬКО как citydata.X (динамически), списки мутируются на месте
+  mapformat.py (~250)   файлы карт .json: load/save/normalize (валидация, MapError), apply
+                        (citydata+C.WORLD_SIZE), suspend/resume (туториал), default/empty_map_dict
+tools/
+  map_editor.py (~700)  РЕДАКТОР КАРТ: python -m tools.map_editor maps/имя.json [--empty]
+maps/
+  arena.json            копия встроенной арены;  demo.json — «ПОЛИГОН» (пример фич)
 server/
   server.py    (~131)   asyncio TCP, TICK_RATE=30, парсинг/рассылка
   world.py     (~900)   симуляция: Player, Ant, NeonAnt, AntShot, Boss, BossShot, Shot, Bee, Slit, World
@@ -160,6 +170,32 @@ WorldBar над щелью: billboard, вынесен forward×1.4 от стен
 **Смерть и вайп:** HP≤0 → dead, 3с → респаун на спавне (южная яма). Урон клиентом (падение hp) → SFX_PLAYER_HURT (антиспам 0.5с). Все мертвы → `_check_wipe`: чистка ants/neon/boss/slits/снаряды, wave=0, событие `wipe`.
 
 **HUD:** HP низ-лево (цвет от запаса) + чат; очки/смерти верх-лево; онлайн верх-право; оружие+LIT ENERGY[3]+таймер пчёл+стаканы[R] низ-право; волна/фаза/BLACK KING верх-центр + предупреждение ЩЕЛИ с отсчётом; прицел центр. Экранэффекты: `death_overlay` (затемнение+текст), `vignette` (зелёный при газе папани) — оба render2d, лерп-альфа (`_update_overlays`).
+
+## 6.5 Кастомные карты и редактор
+
+**Файл карты** (maps/*.json, формат в docstring common/mapformat.py): size, wall_height
+(ЕДИНАЯ для всех стен — коллизии), level2_z, spawn/respawn/boss_spawn, floor
+{texture,color,uv}, carpets (зоны пола, визуал), walls [{x,y,w,d,texture,color,uv,slit}],
+platforms [{x,y,w,d,z}] (z произвольная!), jump_pads, cup_spots, structures
+[{kind:"showcase",x,y}], флаги perimeter/ceiling_lights. Текстуры — ИМЕНА файлов в
+assets/textures (пути/.. запрещены валидацией).
+
+**Применение:** mapformat.load_and_apply(path) ДО создания World/сцены. Сервер: --map в
+main(); World.__init__ вызывает world.refresh_map_caches() (пересбор _BUILDING_RECTS и пр.).
+Клиент: --map в main() до Roblox2(); citymap.build_city читает citydata+CURRENT_MAP
+(текстуры/ковры/флаги), витрина — по структуре showcase. welcome несёт world.map —
+клиент показывает предупреждение при несовпадении карт. Сервер и клиент запускают
+С ОДНИМ файлом.
+
+**Туториал** на встроенной арене всегда: start_tutorial → mapformat.suspend(),
+goto_hub → resume().
+
+**Редактор** (tools/map_editor.py, отдельный ShowBase, окно 1440×860): орбитальная камера
+(ПКМ-драг/WASD/колесо), пик объектов лучом по AABB (без коллизий Panda), полная пересборка
+сцены на каждую правку, undo — стек json-снимков (100). Инструменты 1-8, G перенос,
+стрелки сдвиг/Shift+размер, Q/E высота платформы, T/Y/U/I текстура/цвет/uv, K флаг ЩЕЛИ,
+B/L периметр/лампы, N/M высота стен, ,/. размер мира, 9 снап, Ctrl+S/Z/D. Шрифт —
+Filename.fromOsSpecific (иначе Panda не ест виндовые пути).
 
 ## 7. Графика
 

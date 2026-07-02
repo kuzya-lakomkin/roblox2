@@ -18,8 +18,9 @@ from panda3d.core import (AmbientLight, AntialiasAttrib, AudioSound, CardMaker,
                           WindowProperties, loadPrcFileData)
 
 from common import config as C
+from common import citydata as CD
 from common.citydata import (building_rects, in_any_building, resolve_collision,
-                             support_z, on_jump_pad, CUP_SPOTS, WALL_HEIGHT)
+                             support_z, on_jump_pad, CUP_SPOTS)
 from client.network import NetworkClient
 from client.primitives import make_box
 from client.procgen import (make_sphere, make_cockroach, make_bee, make_boss,
@@ -627,7 +628,8 @@ class Roblox2(ShowBase):
             return
         self._build_world_scene()   # геометрия карты (уже построена для фона меню)
 
-        self.pos = Vec3(0, -14, 0)   # спавн на площади перед столбом SWAGA
+        # спавн у точки PLAYER_SPAWN карты (дефолт — площадь перед столбом SWAGA)
+        self.pos = Vec3(CD.PLAYER_SPAWN[0], CD.PLAYER_SPAWN[1] + 1.0, 0)
         self.vz = 0.0
         self.heading = 0.0
         self.pitch = 0.0
@@ -967,6 +969,9 @@ class Roblox2(ShowBase):
         if getattr(self, "_arena_root", None):
             self._arena_root.show()
         self._tut_world = None
+        # вернуть кастомную карту, если обучение временно откатывало её
+        from common import mapformat as _mf
+        _mf.resume()
         self._tut_victory_t = 0.0
         self.my_id = 0
         self.setBackgroundColor(*SKY[:3])
@@ -1107,6 +1112,10 @@ class Roblox2(ShowBase):
     # tutorial methods
 
     def start_tutorial(self):
+        # обучение всегда идёт на встроенной арене: коридор рассчитан на её
+        # геометрию (см. _tut_y0); кастомная карта вернётся в goto_hub
+        from common import mapformat as _mf
+        _mf.suspend()
         self._hide_all_screens()
         self._build_game()
         if hasattr(self, "_arena_root"):
@@ -1690,7 +1699,15 @@ class Roblox2(ShowBase):
     def _build_world(self):
         self._arena_root = self.render.attachNewNode("arena_root")
         build_city(self._arena_root, self.loader)
-        build_spawn_pillar(self._arena_root, self.loader, self.font)
+        # витрина SWAGA: на кастомной карте — только если есть структура showcase
+        m = CD.CURRENT_MAP
+        if m is None:
+            build_spawn_pillar(self._arena_root, self.loader, self.font)
+        else:
+            for s in m["structures"]:
+                if s["kind"] == "showcase":
+                    pillar = build_spawn_pillar(self._arena_root, self.loader, self.font)
+                    pillar.setPos(s["x"], s["y"], 0)
 
     def _build_world_scene(self):
         """Построить геометрию карты (свет + город). Без сети — годится и для фона меню."""
@@ -2659,7 +2676,7 @@ class Roblox2(ShowBase):
 
         # коллизия камеры со стенами: бинарный поиск по лучу игрок→камера
         wall_rects = getattr(self, "_cam_wall_rects", None)
-        if wall_rects and camz < WALL_HEIGHT and in_any_building(camx, camy, wall_rects):
+        if wall_rects and camz < CD.WALL_HEIGHT and in_any_building(camx, camy, wall_rects):
             px, py = self.pos.x, self.pos.y
             lo, hi = 0.05, 1.0
             for _ in range(7):
@@ -2701,6 +2718,14 @@ class Roblox2(ShowBase):
                 self.my_id = msg["id"]
                 self._show_notice(f"Добро пожаловать! ID: {self.my_id}",
                                   color=(0.6, 0.9, 0.6, 1), duration=3.0)
+                # сверка кастомной карты с сервером (гео должна совпадать)
+                from common import mapformat as _mf
+                srv_map = (msg.get("world") or {}).get("map")
+                if srv_map != _mf.ACTIVE_NAME:
+                    self._show_notice(
+                        f"ВНИМАНИЕ: карта сервера «{srv_map or 'встроенная'}» ≠ "
+                        f"твоя «{_mf.ACTIVE_NAME or 'встроенная'}» (запусти с --map)",
+                        color=(1.0, 0.5, 0.3, 1), duration=8.0)
             elif t == "snapshot":
                 self._latest_snapshot = msg
                 self._apply_snapshot(msg)
@@ -4543,7 +4568,14 @@ def main():
     parser.add_argument("--host",   default=C.HOST,    help="адрес игрового сервера")
     parser.add_argument("--port",   type=int, default=C.PORT, help="порт игрового сервера")
     parser.add_argument("--auth",   default="",        help="адрес auth-сервера (HOST:PORT)")
+    parser.add_argument("--map",    default="", metavar="ФАЙЛ",
+                        help="файл кастомной карты (должен совпадать с картой сервера)")
     args = parser.parse_args()
+
+    if args.map:
+        from common import mapformat
+        data = mapformat.load_and_apply(args.map)   # до постройки сцены
+        print(f"Кастомная карта: «{data['name']}» ({args.map})")
 
     app = Roblox2(args.name, args.host, args.port, auth_server=args.auth)
     app.run()

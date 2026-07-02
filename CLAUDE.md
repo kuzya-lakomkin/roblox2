@@ -95,7 +95,7 @@ assets/textures/ sounds/ fonts/   papich/ (arthas-папич.glb ~8МБ + тек
 Сервер авторитетен. Снаряды гасятся о стены (`_hits_wall`). NeonAnt/Boss не стреляют без LOS.
 
 ## 5. Состояния клиента (client/main.py)
-`state ∈ {HUB, COMBAT, PAUSE, SETTINGS, FARM, SHOP}`
+`state ∈ {HUB, COMBAT, PAUSE, SETTINGS, FARM, SHOP, TUTORIAL, VIDEOGRAPHY}`
 
 - Карта строится в `__init__` (`_build_world_scene`, флаг `world_scene_built`) — фон меню.
 - Игровое состояние (`_build_game`, флаг `world_built`) — лениво при первом входе в бой.
@@ -105,6 +105,7 @@ assets/textures/ sounds/ fonts/   papich/ (arthas-папич.glb ~8МБ + тек
 - **COMBAT**: `start_combat()` → connect → снять blur → 1-е лицо → MUSIC_PHASE1 (MUSIC_BOSS если босс).
 - **PAUSE**: мир живёт, blur включён, PauseMenu прозрачное.
 - **FARM/SHOP**: InfoScreen-заглушки.
+- **TUTORIAL** (`start_tutorial`): без сети, локальный `server.World` (`_tut_world`), коридор `_build_tutorial_scene` 8×90. ⚠️ Коридор сдвинут в y∈[-40,50] (`_tut_y0=-40`): мобы зажимаются `_clamp_to_arena` в ±(WORLD_SIZE-1)=±55, вне этих границ таракан телепортируется на границу и «бежит в невидимую стену». Все координаты обучения — через `self._tut_y0`. Спавн врага у конца коридора (`pos.y+12 > _tut_y0+86`) → позади игрока. Игрок в TUTORIAL не использует арену (пады/support_z/resolve_collision отключены гвардами).
 - `goto_hub()`: стоп звуки/струя → disconnect → clear entities → hub музыка/blur.
 
 ## 6. Геймплей

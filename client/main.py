@@ -1127,6 +1127,11 @@ class Roblox2(ShowBase):
         W = 4.0; H = 4.5; L = 90.0
         CY = L / 2
         root = self.render.attachNewNode("tut_scene")
+        # серверный World зажимает мобов в ±(WORLD_SIZE-1)=±55 (_clamp_to_arena),
+        # поэтому весь коридор должен лежать внутри арены: y ∈ [-40, 50] —
+        # иначе таракан телепортируется на границу и «бежит в невидимую стену»
+        self._tut_y0 = -40.0
+        root.setPos(0, self._tut_y0, 0)
         self._tut_scene_root = root
         floor_tex = load_texture(self.loader, AC.BACKROOMS_FLOOR_TEXTURE)
         wall_tex  = load_texture(self.loader, AC.BACKROOMS_WALL_TEXTURE)
@@ -1160,7 +1165,7 @@ class Roblox2(ShowBase):
         import time as _time
         from server.world import World
         from direct.gui.DirectGui import DirectFrame, DirectLabel
-        self.pos = Vec3(0.0, 2.0, 0.0)
+        self.pos = Vec3(0.0, self._tut_y0 + 2.0, 0.0)
         self.vz = 0.0; self.heading = 0.0; self.pitch = 0.0
         self.on_ground = True; self.weapon = 'syrup'
         self.hp = C.PLAYER_MAX_HP
@@ -1172,7 +1177,7 @@ class Roblox2(ShowBase):
         self._tut_ant_was_alive = False
         self._tut_neon_was_alive = False
         self._tut_victory_t = 0.0
-        self._tut_kill_pos = [0.0, 28.0, 0.0]
+        self._tut_kill_pos = [0.0, self._tut_y0 + 28.0, 0.0]
         self._tut_gas_held_t = 0.0
         self._tut_world = World()
         self.my_id = 1
@@ -1251,21 +1256,28 @@ class Roblox2(ShowBase):
         if step_key == 'look':
             self._tut_look_start_h = self.heading
         elif step_key == 'ant':
-            # один таракан прямо перед игроком в коридоре
-            spawn_y = max(self.pos.y + 12, 22.0)
+            # один таракан прямо перед игроком в коридоре;
+            # у конца коридора места впереди нет — спавним позади (игрок как раз обернулся)
+            y0 = self._tut_y0
+            spawn_y = max(self.pos.y + 12, y0 + 22.0)
+            if spawn_y > y0 + 86.0:
+                spawn_y = self.pos.y - 12
             aid = w._next_ant_id; w._next_ant_id += 1
             a = Ant(aid, (0.0, spawn_y)); w.ants[aid] = a
             self._tut_ant_was_alive = True
             self._play_oneshot(AC.SFX_COCKROACH_STEP, volume=0.5)
         elif step_key == 'neon':
-            # один синий стрелок чуть дальше по коридору
-            spawn_y = max(self.pos.y + 14, 36.0)
+            # один синий стрелок чуть дальше по коридору (у конца — позади игрока)
+            y0 = self._tut_y0
+            spawn_y = max(self.pos.y + 14, y0 + 36.0)
+            if spawn_y > y0 + 86.0:
+                spawn_y = self.pos.y - 14
             nid = w._next_neon_id; w._next_neon_id += 1
             na = NeonAnt(nid, now); na.pos = [0.0, spawn_y, 0.0]; w.neon_ants[nid] = na
             self._tut_neon_was_alive = True
         elif step_key == 'slit':
             sid = w._next_slit_id; w._next_slit_id += 1
-            sl = Slit(sid, [3.8, 52.0, C.PLAYER_HEIGHT * 0.5], [-1.0, 0.0])
+            sl = Slit(sid, [3.8, self._tut_y0 + 52.0, C.PLAYER_HEIGHT * 0.5], [-1.0, 0.0])
             w.slits[sid] = sl
             w.slit_event_active = True
             w.slit_deadline = now + 3600.0
@@ -1307,9 +1319,10 @@ class Roblox2(ShowBase):
             if self._tut_victory_t <= 0:
                 self.goto_hub()
             return
-        # коридор: клэмп позиции игрока внутри стен (W=4.0, L=90.0)
+        # коридор: клэмп позиции игрока внутри стен (W=4.0, L=90.0, сдвиг _tut_y0)
+        y0 = self._tut_y0
         self.pos.x = max(-3.7, min(3.7, self.pos.x))
-        self.pos.y = max(0.1, min(89.5, self.pos.y))
+        self.pos.y = max(y0 + 0.1, min(y0 + 89.5, self.pos.y))
         w = self._tut_world
         self._tut_particle_t += dt
         if self._tut_particle_t > 0.10:
@@ -1337,22 +1350,22 @@ class Roblox2(ShowBase):
         # клэмп врагов внутри коридора
         for a in w.ants.values():
             a.pos[0] = max(-3.5, min(3.5, a.pos[0]))
-            a.pos[1] = max(0.5, min(89.0, a.pos[1]))
+            a.pos[1] = max(y0 + 0.5, min(y0 + 89.0, a.pos[1]))
         for na in w.neon_ants.values():
             na.pos[0] = max(-3.5, min(3.5, na.pos[0]))
-            na.pos[1] = max(0.5, min(89.0, na.pos[1]))
+            na.pos[1] = max(y0 + 0.5, min(y0 + 89.0, na.pos[1]))
         for ev in w.events:
             kind = ev.get('kind')
             if kind == 'ant_killed':
                 self._play_oneshot(AC.SFX_COCKROACH_DEATH, volume=0.8)
-                p2 = ev.get('pos', [0, 28])
+                p2 = ev.get('pos', [0, y0 + 28])
                 pos = [p2[0], p2[1], 0.5]
                 self._tut_kill_pos = pos[:]
                 self.particles.burst(pos, count=12, color=(0.9, 0.5, 0.0, 1),
                     speed=4.0, size=0.25, life=0.7, grav=-5.0, spread=1.2, up=0.5)
             elif kind == 'neon_ant_killed':
                 self._play_oneshot(AC.SFX_COCKROACH_DEATH, volume=0.9)
-                p2 = ev.get('pos', [0, 44])
+                p2 = ev.get('pos', [0, y0 + 44])
                 pos = [p2[0], p2[1], 0.5]
                 self._tut_kill_pos = pos[:]
                 self.particles.burst(pos, count=14, color=(0.3, 0.7, 1.0, 1),
@@ -1394,7 +1407,7 @@ class Roblox2(ShowBase):
         h_delta = abs(((self.heading - self._tut_look_start_h) + 180) % 360 - 180)
         pl = w.players.get(1)
         player_lit = (pl.lit_energy if pl else 0)
-        if step_key == 'walk' and self.pos.y > 14 and moved > 0.01:
+        if step_key == 'walk' and self.pos.y > y0 + 14 and moved > 0.01:
             self._tut_next()
         elif step_key == 'gas':
             if self.keys.get("gas", False):
